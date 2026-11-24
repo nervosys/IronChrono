@@ -43,7 +43,7 @@ wasmbind = ["wasm-bindgen", "js-sys"]
 unstable-locales = ["pure-rust-locales"]
 # IronChrono's agent layer (`chrono::agent`): stable error codes, explicit
 # local-time resolution, injectable clocks, a machine-readable specifier table.
-agent = ["std", "serde"]
+agent = ["std", "serde", "serde/std"]
 # Note that rkyv-16, rkyv-32, and rkyv-64 are mutually exclusive.
 rkyv = ["dep:rkyv", "rkyv/size_32"]
 rkyv-16 = ["dep:rkyv", "rkyv?/size_16"]

@@ -14,4 +14,4 @@ path = "src/main.rs"
 [dependencies]
 chrono = { package = "ironchrono", path = "..", version = "=0.4.46", features = ["agent"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }

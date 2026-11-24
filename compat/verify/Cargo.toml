@@ -1,0 +1,20 @@
+# A real ecosystem graph with `chrono` patched to the IronChrono shim: sqlx's
+# chrono feature, serde_json and tokio all resolve `chrono` to ../chrono.
+[package]
+name = "chrono-verify"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros"] }
+chrono = { version = "0.4", features = ["serde"] }
+iron = { package = "ironchrono", path = "../..", version = "=0.4.46" }
+
+[patch.crates-io]
+chrono = { path = "../chrono" }
