@@ -1,9 +1,63 @@
-ChangeLog for Chrono
-====================
+# Changelog
 
-This documents notable changes to [Chrono](https://github.com/chronotope/chrono)
-up to and including version 0.4.19. For later releases, please review the
-release notes on [GitHub](https://github.com/chronotope/chrono/releases).
+This file documents notable changes to IronChrono, the maintained fork of
+[chrono](https://github.com/chronotope/chrono). The version numbers continue chrono's 0.4 series.
+Upstream's own history follows, under "Upstream chrono history".
+
+## 0.4.46 (Unreleased)
+
+First IronChrono release. Forked from `chronotope/chrono` at `6adaa52`: chrono 0.4.45 plus two
+unreleased fixes (`from_isoywd_opt` returns `None` for out-of-range years; the reversed
+`NaiveDate` day and week iterators are fixed).
+
+### Added
+
+* The agent layer, `chrono::agent`, behind the new `agent` feature:
+  * `ErrorCode`, `Diagnose`, `Diagnosis` and `check_format`: stable snake_case error ids with a
+    remediation hint for every error type chrono returns.
+  * `LocalPolicy`, `ResolveLocal` and `LocalTimeError`: explicit resolution of DST gaps and folds.
+    A gap is always an error; a fold is an error unless `Earliest` or `Latest` is named.
+  * `Clock`, `SystemClock`, `FixedClock` and `SteppingClock`: injectable time sources.
+  * `SPECIFIERS`, `Specifier` and `REFERENCE_INSTANT_RFC3339`: a table of every strftime
+    specifier with its meaning and its output for a reference instant, verified against the
+    formatter.
+  * `Facts`, `facts` and `naive_facts`: ISO week, leap-year, leap-second and offset data in one
+    serializable struct.
+* The `ironchrono` command line tool (package `ironchrono-cli`): `now`, `parse`, `format`,
+  `convert`, `add`, `sub`, `diff`, `round`, `trunc`, `specifiers`, `errors`, `schema`. JSON
+  envelopes on stdout, exit codes 0 to 5, `--now` for deterministic output, `--text` for a
+  human-readable line.
+* `ironchrono mcp`: the same commands as tools of a Model Context Protocol server on stdio.
+* `compat/chrono`: a package named `chrono` that re-exports IronChrono, so
+  `[patch.crates-io] chrono = ...` moves a whole dependency graph.
+* Proofs of the drop-in claim: a surface test that every one of chrono's 167 public paths
+  (derived from rustdoc JSON) is reachable through the shim, an ecosystem test (`compat/verify`)
+  showing sqlx's `chrono` feature working through the patch with `cargo tree -i chrono` showing only
+  the shim, and a run of IronMarketingIntelligence's full suite (2,135 tests) on IronChrono via the
+  patch, matching its result on chrono 0.4.43.
+* README.md, AGENTS.md, llms.txt, SECURITY.md, NOTICE.md and PLAN.md.
+
+### Fixed
+
+* Three doctests used the deprecated `core::i32::MAX` and no longer compiled cleanly on current
+  Rust. They use `i32::MAX`.
+
+### Changed
+
+* The package is named `ironchrono`; the library is still named `chrono`, so `use chrono::...`
+  keeps working. Use `chrono = { package = "ironchrono", version = "0.4" }` to migrate with no
+  code change.
+* Maintainer: Nervosys, replacing the upstream project, whose maintainer announced a wind-down in
+  January 2026 ([chronotope/chrono#1768](https://github.com/chronotope/chrono/issues/1768)).
+  RUSTSEC-2026-0543 marks every chrono version unmaintained.
+* Repository, documentation and homepage links point to `nervosys/IronChrono`.
+
+No public API of chrono 0.4 was removed, renamed or made stricter.
+
+## Upstream chrono history
+
+Upstream's own changelog, which stops at 0.4.19 (later releases were documented on GitHub):
+
 
 ## 0.4.19
 

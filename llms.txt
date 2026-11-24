@@ -1,0 +1,29 @@
+# IronChrono
+
+> The maintained, agentic-first successor to Rust's chrono and a drop-in replacement for it (0.4 API frozen, MIT OR Apache-2.0). Adds an opt-in `chrono::agent` layer (stable error codes, explicit DST policy, injectable clocks) and an `ironchrono` CLI and MCP server that print JSON. Not yet published to crates.io.
+
+## Start here
+
+- [README](README.md): what it is, how to migrate (`chrono = { package = "ironchrono", version = "0.4" }`), the agent layer, the CLI, features, MSRV 1.62.
+- [AGENTS.md](AGENTS.md): how an AI agent should call the CLI/MCP, the full error-code vocabulary, never-guess rules, and how to develop the repo.
+
+## Reference
+
+- [PLAN.md](PLAN.md): principles (compatibility is the product) and roadmap.
+- [CHANGELOG.md](CHANGELOG.md): what changed from upstream chrono.
+- [NOTICE.md](NOTICE.md): provenance (forked from chronotope/chrono at 6adaa52) and licence.
+- [API docs](https://docs.rs/ironchrono): placeholder until the crate is published.
+- CLI self-description: `ironchrono schema` (JSON Schema of every output), `ironchrono errors` (error codes, hints, exit codes), `ironchrono specifiers` (strftime table), `ironchrono <command> --help`.
+- MCP: `ironchrono mcp` serves the same commands over stdio.
+
+## Project
+
+- [Source repository](https://github.com/nervosys/IronChrono)
+- [SECURITY.md](SECURITY.md): how to report a vulnerability.
+
+## Optional
+
+- [Compatibility shim](compat/chrono/Cargo.toml): package `chrono` re-exporting IronChrono, for `[patch.crates-io]`.
+- [Surface test](compat/chrono/tests/surface.rs): proof that all 167 public chrono paths are reachable.
+- [Ecosystem test](compat/verify/Cargo.toml): sqlx's chrono feature through the patch.
+- [Upstream chrono](https://github.com/chronotope/chrono)

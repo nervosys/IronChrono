@@ -3,12 +3,17 @@ cff-version: 1.2.0
 message: Please cite this crate using these information.
 
 # Version information.
-date-released: 2026-06-04
-version: 0.4.45
+version: 0.4.46 # unreleased; add date-released on release
 
 # Project information.
-abstract: Date and time library for Rust
+title: IronChrono
+abstract: >-
+  The maintained, agentic-first successor to chrono, the Rust date and time library, and a
+  drop-in replacement for it. A fork of chrono (0.4.45 plus two unreleased fixes, commit
+  6adaa52). Apart from Nervosys, the authors listed are the original chrono authors.
 authors:
+  - name: Nervosys
+    website: https://github.com/nervosys
   - alias: quodlibetor
     family-names: Maister
     given-names: Brandon W.
@@ -27,7 +32,11 @@ authors:
 license:
   - Apache-2.0
   - MIT
-repository-artifact: https://crates.io/crates/chrono
-repository-code: https://github.com/chronotope/chrono
-title: chrono
-url: https://docs.rs/chrono
+repository-code: https://github.com/nervosys/IronChrono
+url: https://github.com/nervosys/IronChrono
+references:
+  - type: software
+    title: chrono
+    abstract: Date and time library for Rust, the upstream project IronChrono is forked from
+    repository-code: https://github.com/chronotope/chrono
+    url: https://docs.rs/chrono
