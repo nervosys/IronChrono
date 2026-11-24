@@ -116,7 +116,7 @@ If this table and `ironchrono errors` disagree, the command is right.
 chrono = { package = "ironchrono", version = "0.4", features = ["agent"] }
 ```
 
-Not published to crates.io yet; use `git = "https://github.com/nervosys/IronChrono"` until it is.
+On crates.io as `ironchrono`; the CLI is `cargo install ironchrono-cli`.
 Code is written as `use chrono::...`, exactly as for chrono. The agent layer is in `chrono::agent`:
 `ErrorCode`, `Diagnose`, `Diagnosis`, `check_format`, `check_output_format`, `LocalPolicy`, `ResolveLocal`,
 `LocalTimeError`, `Clock`, `SystemClock`, `FixedClock`, `SteppingClock`, `SPECIFIERS`,

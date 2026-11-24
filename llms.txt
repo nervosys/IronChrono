@@ -1,6 +1,6 @@
 # IronChrono
 
-> The maintained, agentic-first successor to Rust's chrono and a drop-in replacement for it (0.4 API frozen, MIT OR Apache-2.0). Adds an opt-in `chrono::agent` layer (stable error codes, explicit DST policy, injectable clocks) and an `ironchrono` CLI and MCP server that print JSON. Not yet published to crates.io.
+> The maintained, agentic-first successor to Rust's chrono and a drop-in replacement for it (0.4 API frozen, MIT OR Apache-2.0). Adds an opt-in `chrono::agent` layer (stable error codes, explicit DST policy, injectable clocks) and an `ironchrono` CLI and MCP server that print JSON. On crates.io as `ironchrono` and `ironchrono-cli`.
 
 ## Start here
 
@@ -12,7 +12,7 @@
 - [PLAN.md](PLAN.md): principles (compatibility is the product) and roadmap.
 - [CHANGELOG.md](CHANGELOG.md): what changed from upstream chrono.
 - [NOTICE.md](NOTICE.md): provenance (forked from chronotope/chrono at 6adaa52) and licence.
-- [API docs](https://docs.rs/ironchrono): placeholder until the crate is published.
+- [API docs](https://docs.rs/ironchrono)
 - CLI self-description: `ironchrono schema` (JSON Schema of every output), `ironchrono errors` (error codes, hints, exit codes), `ironchrono specifiers` (strftime table), `ironchrono <command> --help`.
 - MCP: `ironchrono mcp` serves the same commands over stdio.
 

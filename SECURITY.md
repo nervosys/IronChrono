@@ -21,8 +21,7 @@ If we decide a report is not a vulnerability, we say why.
 ## Supported versions
 
 Only the latest 0.4.x release is supported. Fixes are not backported to older 0.4.x releases.
-IronChrono has not been published to crates.io yet; until it is, the supported version is the
-current `master` of the repository.
+The first release is 0.4.46 (2026-11-24).
 
 ## Audits
 

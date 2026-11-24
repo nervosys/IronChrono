@@ -4,7 +4,7 @@ This file documents notable changes to IronChrono, the maintained fork of
 [chrono](https://github.com/chronotope/chrono). The version numbers continue chrono's 0.4 series.
 Upstream's own history follows, under "Upstream chrono history".
 
-## 0.4.46 (Unreleased)
+## 0.4.46 (2026-11-24)
 
 First IronChrono release. Forked from `chronotope/chrono` at `6adaa52`: chrono 0.4.45 plus two
 unreleased fixes (`from_isoywd_opt` returns `None` for out-of-range years; the reversed

@@ -3,8 +3,8 @@
 The maintained, agentic-first successor to Rust's [chrono](https://github.com/chronotope/chrono),
 and a drop-in replacement for it. By Nervosys. MIT OR Apache-2.0.
 
-IronChrono is not published to crates.io yet. Until it is, use the git or path forms below.
-Where this file shows a crates.io form, it is what will work once published.
+IronChrono is on crates.io as [`ironchrono`](https://crates.io/crates/ironchrono) (library) and
+[`ironchrono-cli`](https://crates.io/crates/ironchrono-cli) (the `ironchrono` command).
 
 ## What and why
 
@@ -40,38 +40,38 @@ crate name in code is still `chrono`.
 ironchrono = "0.4"
 ```
 
-Until it is on crates.io, point either form at the repository:
+**(c) Patch a whole graph, for transitive dependents such as sqlx.** Cargo patches only a package of
+the same name, so the patch needs a package named `chrono`: the shim in `compat/chrono`, which
+re-exports IronChrono and nothing else. Copy its `Cargo.toml` and `src/lib.rs` into your workspace
+(say `crates/chrono-compat`), make it a workspace member, and in its `Cargo.toml` drop the `path`
+from the `iron` dependency so it comes from crates.io:
 
 ```toml
-chrono = { package = "ironchrono", git = "https://github.com/nervosys/IronChrono" }
+iron = { package = "ironchrono", version = "=0.4.46", default-features = false }
 ```
 
-**(c) Patch a whole graph, for transitive dependents such as sqlx.** The `compat/chrono` package is
-named `chrono`, so Cargo accepts it as a patch and every crate in the graph builds against
-IronChrono. With a local clone:
-
-```toml
-[patch.crates-io]
-chrono = { path = "../IronChrono/compat/chrono" }
-```
-
-The shim lives in a subdirectory of the repository, so a git patch must resolve to it. Use the
-`path` form unless you have checked that your Cargo version finds `compat/chrono` in the git
-checkout.
+Then patch the graph to it and refresh the lockfile:
 
 ```toml
 [patch.crates-io]
-chrono = { git = "https://github.com/nervosys/IronChrono" }
+chrono = { path = "crates/chrono-compat" }
 ```
 
-After either, run `cargo update -p chrono`. A lockfile pins the old chrono version and keeps using
-it until you do. We learned this the hard way.
+```sh
+cargo update -p chrono
+```
 
-### Scanner caveat (read before using the patch)
+Run `cargo update -p chrono` every time: a lockfile pins the old chrono and keeps using it until you
+do. We learned this the hard way. Every crate in the graph, sqlx included, then builds against
+IronChrono. `cargo tree -i chrono` shows only the shim.
 
-Advisory scanners key on the package name. A graph patched with the shim still contains a package
-named `chrono`, from a path source. `cargo audit` skips non-registry sources and will not report it.
-SBOM-based OSV scans that ignore the source will still match RUSTSEC-2026-0543.
+### Advisory scanners
+
+Scanners key on the package name. Kept as a member of your workspace, the shim is your own code (20
+lines that re-export), and the code it re-exports is scanned under its real name, `ironchrono`.
+Pointed at from outside your workspace (a path or git patch to a clone), it is a third-party
+package named `chrono`: `cargo audit` skips non-registry sources, but an SBOM-based OSV scan that
+ignores the source will match RUSTSEC-2026-0543, chrono's "unmaintained" notice.
 
 So for your own crates, use (a) or (b) and depend on `ironchrono` directly. Use the patch only to
 move transitive dependents, and tell your scanner that the `chrono` package in your graph is a path
@@ -169,6 +169,10 @@ assert_eq!(j.example, "189");
 this repository.
 
 ## The `ironchrono` CLI
+
+```sh
+cargo install ironchrono-cli
+```
 
 `ironchrono` (crate `ironchrono-cli`, in `cli/`) exposes the same layer on the command line.
 It prints exactly one JSON object per call, uses stable exit codes, and never reads the system
@@ -280,7 +284,7 @@ and when, and [PLAN.md](PLAN.md) for the roadmap. Upstream documentation at
 
 ## Documentation
 
-* API reference: <https://docs.rs/ironchrono> (once published).
+* API reference: <https://docs.rs/ironchrono>.
 * For AI agents: [AGENTS.md](AGENTS.md) and [llms.txt](llms.txt).
 * Security: [SECURITY.md](SECURITY.md).
 
