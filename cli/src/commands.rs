@@ -1,7 +1,7 @@
 //! Command implementations. Each returns the success envelope or a `CliError`.
 
 use crate::duration::{self, Span};
-use crate::output::{CliError, EXIT_CODES, EXIT_INTERNAL, EXIT_USAGE, ok};
+use crate::output::{CliError, EXIT_CODES, EXIT_INTERNAL, EXIT_USAGE, MAX_OUTPUT, clip, ok};
 use crate::schema;
 use crate::spec::Args;
 use chrono::agent::{
@@ -15,7 +15,25 @@ use chrono::{
 use serde_json::{Value, json};
 use std::fmt::{Display, Write};
 
+/// Run a command; a result whose JSON exceeds `MAX_OUTPUT` bytes is an error.
 pub fn run(cmd: &str, a: &Args) -> Result<Value, CliError> {
+    limit_output(run_inner(cmd, a)?)
+}
+
+/// Refuse a result whose JSON exceeds `MAX_OUTPUT` bytes.
+fn limit_output(v: Value) -> Result<Value, CliError> {
+    let size = v.to_string().len();
+    if size > MAX_OUTPUT {
+        return Err(CliError::new(
+            ErrorCode::OutOfRange,
+            format!("the output would be {size} bytes; the limit is {MAX_OUTPUT}"),
+        )
+        .with_hint("Use a shorter format string or fewer specifiers."));
+    }
+    Ok(v)
+}
+
+fn run_inner(cmd: &str, a: &Args) -> Result<Value, CliError> {
     match cmd {
         "now" => now(a),
         "parse" => parse(a),
@@ -30,7 +48,7 @@ pub fn run(cmd: &str, a: &Args) -> Result<Value, CliError> {
         "errors" => errors(),
         "schema" => Ok(ok("schema", json!({"schema": schema::schema()}))),
         other => Err(CliError::usage(
-            format!("unknown command {other:?}"),
+            format!("unknown command {:?}", clip(other)),
             format!("Commands: {}.", crate::spec::names().join(", ")),
         )),
     }
@@ -58,6 +76,7 @@ fn utc_offset() -> FixedOffset {
 
 fn parse_zone(s: &str) -> Result<Zone, CliError> {
     let t = s.trim();
+    let shown = clip(t);
     match t.to_ascii_lowercase().as_str() {
         "z" | "utc" => return Ok(Zone::Fixed(utc_offset())),
         "local" => return Ok(Zone::Local),
@@ -70,17 +89,21 @@ fn parse_zone(s: &str) -> Result<Zone, CliError> {
             return Err(if t.contains('/') || t.chars().any(|c| c.is_ascii_alphabetic()) {
                 CliError::new(
                     ErrorCode::ParseInvalid,
-                    format!("{t:?} looks like an IANA time zone name, which is not supported yet"),
+                    format!(
+                        "{shown:?} looks like an IANA time zone name, which is not supported yet"
+                    ),
                 )
                 .with_hint(
                     "IANA zones are planned. Use a fixed offset (+HH:MM, -HH:MM), Z, or local.",
                 )
             } else {
-                CliError::new(ErrorCode::ParseInvalid, format!("{t:?} is not a zone"))
+                CliError::new(ErrorCode::ParseInvalid, format!("{shown:?} is not a zone"))
                     .with_hint("Use +HH:MM, -HH:MM, Z or local.")
             });
         }
     };
+    // Offsets are ASCII; a multi-byte character would make the byte split below unsound.
+    let rest = if rest.is_ascii() { rest } else { "" };
     let (h, m) = match rest.split_once(':') {
         Some((h, m)) => (h, m),
         None if rest.len() == 4 => rest.split_at(2),
@@ -95,18 +118,21 @@ fn parse_zone(s: &str) -> Result<Zone, CliError> {
         }
     };
     let (Some(h), Some(m)) = (num(h), num(m)) else {
-        return Err(CliError::new(ErrorCode::ParseInvalid, format!("{t:?} is not a valid offset"))
-            .with_hint("Use +HH:MM, -HH:MM, +HHMM, Z or local."));
+        return Err(CliError::new(
+            ErrorCode::ParseInvalid,
+            format!("{shown:?} is not a valid offset"),
+        )
+        .with_hint("Use +HH:MM, -HH:MM, +HHMM, Z or local."));
     };
     if h > 23 || m > 59 {
         return Err(CliError::new(
             ErrorCode::ParseOutOfRange,
-            format!("offset {t:?} is out of range"),
+            format!("offset {shown:?} is out of range"),
         )
         .with_hint("Hours must be 0-23 and minutes 0-59."));
     }
     FixedOffset::east_opt(sign * (h * 3600 + m * 60)).map(Zone::Fixed).ok_or_else(|| {
-        CliError::new(ErrorCode::ParseOutOfRange, format!("offset {t:?} is out of range"))
+        CliError::new(ErrorCode::ParseOutOfRange, format!("offset {shown:?} is out of range"))
     })
 }
 
@@ -129,7 +155,7 @@ where
     let mut err = CliError::from_diag(&e);
     if let LocalTimeError::Ambiguous { earliest, latest } = &e {
         err.details = Some(json!({"earliest": earliest.to_string(), "latest": latest.to_string()}));
-        err.hint = format!("{} Pass --policy earliest or --policy latest.", err.hint);
+        err.hint = "That wall-clock time occurs twice at a DST fold. Pass --policy earliest or --policy latest, or supply an explicit offset.".into();
     }
     err
 }
@@ -196,7 +222,7 @@ fn parse_auto(s: &str) -> Result<(Inst, String), CliError> {
             Some(d) => Ok((Inst::Aware(d.fixed_offset()), "unix_seconds".into())),
             None => Err(CliError::new(
                 ErrorCode::ParseInvalid,
-                format!("{t:?} is not a unix timestamp in range"),
+                format!("{:?} is not a unix timestamp in range", clip(t)),
             )
             .with_hint("Use @<integer seconds since 1970-01-01T00:00:00Z>.")),
         };
@@ -229,7 +255,8 @@ fn parse_auto(s: &str) -> Result<(Inst, String), CliError> {
     if !matches!(err.code.as_str(), "parse_out_of_range" | "parse_impossible") {
         err.code = ErrorCode::ParseInvalid.as_str().into();
     }
-    err.message = format!("{t:?} matches none of the supported formats ({})", names.join(", "));
+    err.message =
+        format!("{:?} matches none of the supported formats ({})", clip(t), names.join(", "));
     err.hint = "Use RFC 3339 (2024-03-01T12:00:00Z), or pass --format <strftime>.".into();
     Err(err)
 }
@@ -309,7 +336,7 @@ fn format(a: &Args) -> Result<Value, CliError> {
     if items.clone().any(|i| matches!(i, Item::Error)) {
         return Err(CliError::new(
             ErrorCode::ParseBadFormat,
-            format!("invalid strftime format {f:?}"),
+            format!("invalid strftime format {:?}", clip(f)),
         ));
     }
     let mut out = String::new();
@@ -320,7 +347,7 @@ fn format(a: &Args) -> Result<Value, CliError> {
     if r.is_err() {
         return Err(CliError::new(
             ErrorCode::ParseBadFormat,
-            format!("format {f:?} cannot be applied to this input"),
+            format!("format {:?} cannot be applied to this input", clip(f)),
         )
         .with_hint(
             "The format uses offset or zone fields but the input has no offset; pass --offset.",
@@ -502,7 +529,7 @@ fn specifiers(a: &Args) -> Result<Value, CliError> {
     if let Some(g) = group {
         if !groups.contains(&g) {
             return Err(CliError::usage(
-                format!("unknown group {g:?}"),
+                format!("unknown group {:?}", clip(g)),
                 format!("Groups: {}.", groups.join(", ")),
             ));
         }
@@ -519,9 +546,32 @@ fn errors() -> Result<Value, CliError> {
         .iter()
         .map(|c| json!({"code": c.as_str(), "hint": c.hint(), "exit_code": crate::output::exit_for(*c)}))
         .collect();
-    list.push(json!({"code": "usage", "hint": "Run `ironchrono <command> --help`.", "exit_code": EXIT_USAGE}));
+    list.push(json!({"code": "usage", "hint": "Run `ironchrono <command> --help`. Each argument is at most 4096 bytes.", "exit_code": EXIT_USAGE}));
     list.push(json!({"code": "internal", "hint": "A bug in ironchrono; please report it.", "exit_code": EXIT_INTERNAL}));
     let codes: Vec<Value> =
         EXIT_CODES.iter().map(|(c, m)| json!({"exit_code": c, "meaning": m})).collect();
     Ok(ok("errors", json!({"errors": list, "exit_codes": codes})))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_over_the_limit_is_out_of_range() {
+        let big = json!({"formatted": "x".repeat(MAX_OUTPUT)});
+        let e = limit_output(big).unwrap_err();
+        assert_eq!((e.code.as_str(), e.exit), ("out_of_range", 4));
+        assert!(e.hint.contains("format"));
+        assert!(limit_output(json!({"formatted": "x".repeat(1000)})).is_ok());
+    }
+
+    #[test]
+    fn the_largest_format_stays_under_the_limit() {
+        // 4096 bytes of `%+` is the most one argument can expand to.
+        let mut a = Args::new();
+        a.insert("input".into(), "2024-03-01T12:00:00Z".into());
+        a.insert("format".into(), "%+".repeat(2048));
+        assert!(run("format", &a).is_ok());
+    }
 }

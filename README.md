@@ -172,7 +172,9 @@ this repository.
 
 `ironchrono` (crate `ironchrono-cli`, in `cli/`) exposes the same layer on the command line.
 It prints exactly one JSON object per call, uses stable exit codes, and never reads the system
-clock when you pass `--now`. Add `--text` for a human-readable line. Build it with:
+clock except in `now`, which takes `--now` to fix it. Add `--text` for a human-readable line.
+Each argument may be at most 4096 bytes, output at most 65536 bytes, and an MCP request line at most 1 MiB.
+Build it with:
 
 ```
 cargo build -p ironchrono-cli

@@ -4,7 +4,7 @@
 //! Years are 12 months. Calendar months are applied first, with month-end
 //! clamping (Jan 31 + 1 month = Feb 28/29), then the exact part.
 
-use crate::output::CliError;
+use crate::output::{CliError, clip};
 use chrono::TimeDelta;
 use chrono::agent::ErrorCode;
 
@@ -71,7 +71,7 @@ pub fn parse(input: &str) -> Result<Span, SpanError> {
         None => (false, s.strip_prefix('+').unwrap_or(s)),
     };
     if body.is_empty() {
-        return Err(syntax(format!("empty duration {input:?}")));
+        return Err(syntax(format!("empty duration {:?}", clip(input))));
     }
     let span =
         if body.starts_with(['P', 'p']) { iso(&body[1..], input)? } else { compact(body, input)? };
@@ -96,7 +96,7 @@ fn iso(mut rest: &str, input: &str) -> Result<Span, SpanError> {
     while !rest.is_empty() {
         if rest.starts_with(['T', 't']) {
             if in_time {
-                return Err(syntax(format!("second 'T' in {input:?}")));
+                return Err(syntax(format!("second 'T' in {:?}", clip(input))));
             }
             in_time = true;
             after_t = true;
@@ -105,13 +105,16 @@ fn iso(mut rest: &str, input: &str) -> Result<Span, SpanError> {
         }
         let (whole, r) = digits(rest);
         if whole.is_empty() {
-            return Err(syntax(format!("expected a number in {input:?}")));
+            return Err(syntax(format!("expected a number in {:?}", clip(input))));
         }
         let (frac, r) = match r.strip_prefix(['.', ',']) {
             Some(r2) => {
                 let (f, r3) = digits(r2);
                 if f.is_empty() || f.len() > 9 {
-                    return Err(syntax(format!("fraction needs 1 to 9 digits in {input:?}")));
+                    return Err(syntax(format!(
+                        "fraction needs 1 to 9 digits in {:?}",
+                        clip(input)
+                    )));
                 }
                 (Some(f), r3)
             }
@@ -120,7 +123,7 @@ fn iso(mut rest: &str, input: &str) -> Result<Span, SpanError> {
         let unit = r
             .chars()
             .next()
-            .ok_or_else(|| syntax(format!("number without a unit in {input:?}")))?;
+            .ok_or_else(|| syntax(format!("number without a unit in {:?}", clip(input))))?;
         rest = &r[unit.len_utf8()..];
         let n = int(whole)?;
         let (this_rank, ok_frac) = match (in_time, unit.to_ascii_uppercase()) {
@@ -131,13 +134,13 @@ fn iso(mut rest: &str, input: &str) -> Result<Span, SpanError> {
             (true, 'H') => (5, false),
             (true, 'M') => (6, false),
             (true, 'S') => (7, true),
-            _ => return Err(syntax(format!("unexpected unit {unit:?} in {input:?}"))),
+            _ => return Err(syntax(format!("unexpected unit {:?} in {:?}", unit, clip(input)))),
         };
         if frac.is_some() && !ok_frac {
-            return Err(syntax(format!("only seconds may have a fraction in {input:?}")));
+            return Err(syntax(format!("only seconds may have a fraction in {:?}", clip(input))));
         }
         if this_rank <= rank {
-            return Err(syntax(format!("units out of order or repeated in {input:?}")));
+            return Err(syntax(format!("units out of order or repeated in {:?}", clip(input))));
         }
         rank = this_rank;
         count += 1;
@@ -159,7 +162,7 @@ fn iso(mut rest: &str, input: &str) -> Result<Span, SpanError> {
         }
     }
     if count == 0 || after_t {
-        return Err(syntax(format!("{input:?} has no components")));
+        return Err(syntax(format!("{:?} has no components", clip(input))));
     }
     Ok(span)
 }
@@ -169,7 +172,7 @@ fn compact(mut rest: &str, input: &str) -> Result<Span, SpanError> {
     while !rest.is_empty() {
         let (num, r) = digits(rest);
         if num.is_empty() {
-            return Err(syntax(format!("expected a number in {input:?}")));
+            return Err(syntax(format!("expected a number in {:?}", clip(input))));
         }
         let uend = r.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(r.len());
         let (unit, r) = r.split_at(uend);
@@ -185,8 +188,8 @@ fn compact(mut rest: &str, input: &str) -> Result<Span, SpanError> {
             "w" => span.add_delta(TimeDelta::try_weeks(n))?,
             "mo" => span.add_months(n, 1)?,
             "y" => span.add_months(n, 12)?,
-            "" => return Err(syntax(format!("number {num} has no unit in {input:?}"))),
-            u => return Err(syntax(format!("unknown unit {u:?} in {input:?}"))),
+            "" => return Err(syntax(format!("number {num} has no unit in {:?}", clip(input)))),
+            u => return Err(syntax(format!("unknown unit {:?} in {:?}", clip(u), clip(input)))),
         }
         rest = r;
     }

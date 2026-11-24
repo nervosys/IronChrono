@@ -24,6 +24,11 @@ Only the latest 0.4.x release is supported. Fixes are not backported to older 0.
 IronChrono has not been published to crates.io yet; until it is, the supported version is the
 current `master` of the repository.
 
+## Audits
+
+[SECURITY-AUDIT.md](SECURITY-AUDIT.md): the 2026-11-24 audit (CVE/RustSec, MITRE ATT&CK,
+NIST FIPS, CMMC 2.0 Level 2), its findings and what was fixed.
+
 ## Upstream chrono advisories
 
 IronChrono keeps chrono 0.4's API, so an advisory against chrono may also apply here.

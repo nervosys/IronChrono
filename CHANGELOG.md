@@ -37,6 +37,23 @@ unreleased fixes (`from_isoywd_opt` returns `None` for out-of-range years; the r
   patch, matching its result on chrono 0.4.43.
 * README.md, AGENTS.md, llms.txt, SECURITY.md, NOTICE.md and PLAN.md.
 
+### Security
+
+From the 2026-11-24 audit (SECURITY-AUDIT.md):
+
+* The file `TZ` names is read only if it is a regular file of at most 1 MiB. `TZ=/dev/zero`
+  exhausted memory and a FIFO blocked `Local::now()`; both now fall back to the system zone.
+* `ironchrono`: a non-ASCII offset no longer panics, and no input ends the MCP server: a panic is
+  the `internal` error; a line that is not UTF-8 gets -32700; lines over 1 MiB get -32600 and the
+  stream resynchronises; ids are strings (up to 256 characters), integers or null; `jsonrpc` must
+  be "2.0". Arguments are limited to 4,096 bytes, output to 65,536 bytes, echoed input to 200
+  characters. `--text` escapes control and bidi characters. `--text`, `--help` and `-h` count only
+  before `--` and never as a flag's value. A non-UTF-8 argument is a usage error. `--now` is
+  accepted only by `now`.
+* `chrono::agent::check_output_format`: rejects specifiers valid only for parsing, so formatting
+  with an accepted string cannot fail. `check_format` escapes the specifier it names.
+* Fuzz targets `fuzz_agent` and `fuzz_parse`.
+
 ### Fixed
 
 * Three doctests used the deprecated `core::i32::MAX` and no longer compiled cleanly on current

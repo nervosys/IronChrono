@@ -10,13 +10,60 @@ pub const EXIT_PARSE: i32 = 3;
 pub const EXIT_OUT_OF_RANGE: i32 = 4;
 pub const EXIT_LOCAL_TIME: i32 = 5;
 
+/// Longest accepted string argument, in bytes (CLI and MCP alike).
+pub const MAX_ARG: usize = 4096;
+/// Longest formatted output, in bytes.
+pub const MAX_OUTPUT: usize = 65536;
+/// Longest echo of caller input inside an error message, in characters.
+pub const MAX_ECHO: usize = 200;
+
+/// Caller input as it may appear in an error message: at most `MAX_ECHO`
+/// characters, with `…` when cut. Use as `{:?}` of `clip(s)`.
+pub fn clip(s: &str) -> String {
+    match s.char_indices().nth(MAX_ECHO) {
+        Some((i, _)) => format!("{}…", &s[..i]),
+        None => s.to_string(),
+    }
+}
+
+/// Run `f`, mapping a panic to the documented internal error.
+pub fn guard<T>(f: impl FnOnce() -> Result<T, CliError>) -> Result<T, CliError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|_| Err(CliError::internal("an internal error occurred")))
+}
+
+/// Escape control, C1 and bidi characters so output text cannot steer a terminal.
+fn esc_with(s: &str, keep_newline: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        let bad = (c.is_control() && !(keep_newline && c == '\n'))
+            || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}');
+        if bad {
+            out.push_str(&format!("\\u{{{:x}}}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+pub fn esc(s: &str) -> String {
+    esc_with(s, false)
+}
+
 /// Exit-code table, as `(code, meaning)`; shown in `--help` and `errors`.
 pub const EXIT_CODES: &[(i32, &str)] = &[
     (EXIT_OK, "ok"),
     (EXIT_INTERNAL, "internal error"),
-    (EXIT_USAGE, "usage error: unknown command or flag, missing or invalid argument"),
+    (
+        EXIT_USAGE,
+        "usage error: unknown command or flag, missing, invalid or over-long (4096 bytes) argument",
+    ),
     (EXIT_PARSE, "parse error: input, format, offset or duration could not be understood"),
-    (EXIT_OUT_OF_RANGE, "out of range: the result is not representable, or rounding failed"),
+    (
+        EXIT_OUT_OF_RANGE,
+        "out of range: the result is not representable, rounding failed, or the output exceeds 65536 bytes",
+    ),
     (EXIT_LOCAL_TIME, "local time is ambiguous or nonexistent (see --policy)"),
 ];
 
@@ -124,12 +171,12 @@ pub fn render_text(v: &Value) -> String {
         let e = &v["error"];
         return format!(
             "error[{}]: {}\nhint: {}",
-            e["code"].as_str().unwrap_or("?"),
-            e["message"].as_str().unwrap_or(""),
-            e["hint"].as_str().unwrap_or("")
+            esc(e["code"].as_str().unwrap_or("?")),
+            esc(e["message"].as_str().unwrap_or("")),
+            esc(e["hint"].as_str().unwrap_or(""))
         );
     }
-    let s = |x: &Value| x.as_str().unwrap_or("").to_string();
+    let s = |x: &Value| esc(x.as_str().unwrap_or(""));
     match v["command"].as_str().unwrap_or("") {
         "format" => s(&v["formatted"]),
         "diff" => s(&v["human"]),
@@ -167,8 +214,34 @@ pub fn render_text(v: &Value) -> String {
                 let naive = if v["naive"] == json!(true) { " (naive, no offset)" } else { "" };
                 format!("{}{}", s(&v["instant"]["rfc3339"]), naive)
             } else {
-                serde_json::to_string_pretty(v).unwrap_or_default()
+                esc_with(&serde_json::to_string_pretty(v).unwrap_or_default(), true)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_cuts_long_input() {
+        assert_eq!(clip("abc"), "abc");
+        let c = clip(&"é".repeat(500));
+        assert_eq!(c.chars().count(), MAX_ECHO + 1);
+        assert!(c.ends_with('…'));
+    }
+
+    #[test]
+    fn guard_maps_a_panic_to_internal() {
+        let r: Result<(), CliError> = guard(|| panic!("boom"));
+        let e = r.unwrap_err();
+        assert_eq!((e.code.as_str(), e.exit), ("internal", EXIT_INTERNAL));
+        assert!(!e.message.contains("boom"));
+    }
+
+    #[test]
+    fn esc_escapes_controls_and_bidi() {
+        assert_eq!(esc("a\x1b[2J\u{202e}b\u{85}\x7f\n"), r"a\u{1b}[2J\u{202e}b\u{85}\u{7f}\u{a}");
     }
 }

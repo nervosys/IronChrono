@@ -40,7 +40,7 @@ mod local;
 mod spec;
 
 pub use self::clock::{Clock, FixedClock, SteppingClock, SystemClock};
-pub use self::error::{Diagnose, Diagnosis, ErrorCode, check_format};
+pub use self::error::{Diagnose, Diagnosis, ErrorCode, check_format, check_output_format};
 pub use self::facts::{Facts, facts, naive_facts};
 pub use self::local::{LocalPolicy, LocalTimeError, ResolveLocal};
 pub use self::spec::{REFERENCE_INSTANT_RFC3339, SPECIFIERS, Specifier};

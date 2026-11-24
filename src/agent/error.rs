@@ -214,6 +214,9 @@ pub trait Diagnose {
 /// Checks a strftime format string without using it. Returns a [`ErrorCode::ParseBadFormat`]
 /// diagnosis naming the first bad specifier and its byte position, or `Ok(())`.
 ///
+/// This checks syntax, which is what parsing needs. A few specifiers are valid only for
+/// parsing (`%#z`): use [`check_output_format`] before formatting with an untrusted string.
+///
 /// ```
 /// use chrono::agent::{check_format, ErrorCode};
 /// assert!(check_format("%Y-%m-%d").is_ok());
@@ -226,9 +229,41 @@ pub fn check_format(fmt: &str) -> Result<(), Diagnosis> {
     if !has_error(fmt) {
         return Ok(());
     }
+    Err(bad_specifier(fmt, has_error, "unsupported or malformed"))
+}
+
+/// Checks that a strftime format string can be used to format a value with an offset
+/// (a `DateTime`): [`check_format`], plus no specifier that is valid only for parsing.
+/// When this returns `Ok(())`, `dt.format(fmt).to_string()` does not panic for any
+/// `DateTime`; for a naive value, the offset specifiers (`%z`, `%Z`, `%:z`, `%+`, ...)
+/// still fail, because a naive value has no offset.
+///
+/// ```
+/// use chrono::agent::{check_format, check_output_format};
+/// assert!(check_format("%Y %#z").is_ok()); // fine for parsing
+/// let d = check_output_format("%Y %#z").unwrap_err();
+/// assert!(d.message.contains("%#z") && d.message.contains("position 3"));
+/// ```
+pub fn check_output_format(fmt: &str) -> Result<(), Diagnosis> {
+    check_format(fmt)?;
+    let reference = crate::DateTime::parse_from_rfc3339(super::REFERENCE_INSTANT_RFC3339)
+        .expect("the reference instant parses");
+    let fails = |s: &str| {
+        use core::fmt::Write;
+        let mut out = String::new();
+        write!(out, "{}", reference.format_with_items(StrftimeItems::new(s))).is_err()
+    };
+    if !fails(fmt) {
+        return Ok(());
+    }
+    Err(bad_specifier(fmt, fails, "parse-only"))
+}
+
+/// The diagnosis for the first specifier in `fmt` that `bad` rejects.
+fn bad_specifier(fmt: &str, bad: impl Fn(&str) -> bool, what: &str) -> Diagnosis {
     let bytes = fmt.as_bytes();
     let mut i = 0;
-    let mut bad = 0;
+    let mut at = 0;
     while i < fmt.len() {
         if bytes[i] != b'%' {
             i += 1;
@@ -237,25 +272,37 @@ pub fn check_format(fmt: &str) -> Result<(), Diagnosis> {
         // The shortest valid spec starting here (specs are at most a few characters long).
         let end = (i + 2..=fmt.len().min(i + 8))
             .filter(|j| fmt.is_char_boundary(*j))
-            .find(|j| !has_error(&fmt[i..*j]));
+            .find(|j| !bad(&fmt[i..*j]));
         match end {
             Some(j) => i = j,
             None => {
-                bad = i;
+                at = i;
                 break;
             }
         }
     }
-    let text: String = fmt[bad..].chars().take(2).collect();
+    // Name the specifier: the shortest well-formed one starting here (`%#z`), or the
+    // first two characters when none is (`%Q`). Escaped, so that a control character
+    // in an untrusted format cannot reach a terminal or log raw.
+    let rest = &fmt[at..];
+    let n = (3..=5)
+        .find(|n| {
+            let s: String = rest.chars().take(*n).collect();
+            s.chars().count() == *n && !StrftimeItems::new(&s).any(|i| i == Item::Error)
+        })
+        .unwrap_or(2);
+    let text: String = rest.chars().take(n).collect();
     let code = ErrorCode::ParseBadFormat;
-    Err(Diagnosis {
+    Diagnosis {
         code,
         message: format!(
-            "unsupported or malformed format specifier `{}` at position {} (byte offset)",
-            text, bad
+            "{} format specifier `{}` at position {} (byte offset)",
+            what,
+            text.escape_debug(),
+            at
         ),
         hint: code.hint(),
-    })
+    }
 }
 
 fn make<E: fmt::Display + Diagnose + ?Sized>(e: &E) -> Diagnosis {
@@ -443,6 +490,37 @@ mod tests {
         assert!(check_format("ab%").unwrap_err().message.contains("position 2"));
         assert!(check_format("%-a").unwrap_err().message.contains("`%-`"));
         assert!(check_format("%d %%%x%\u{e9}").unwrap_err().message.contains("position 7"));
+    }
+
+    #[test]
+    fn check_output_format_rejects_parse_only_specifiers() {
+        assert!(check_output_format("%Y-%m-%dT%H:%M:%S%.3f%:z %Z %+ %s %%").is_ok());
+        assert!(check_format("%Y %#z").is_ok());
+        let d = check_output_format("%Y %#z").unwrap_err();
+        assert_eq!(d.code, ErrorCode::ParseBadFormat);
+        assert!(d.message.starts_with("parse-only"), "{}", d.message);
+        assert!(d.message.contains("`%#z`") && d.message.contains("position 3"), "{}", d.message);
+        // Syntax errors are still reported as such.
+        assert!(check_output_format("%Q").unwrap_err().message.contains("`%Q`"));
+        // It agrees with the formatter on every specifier in the table.
+        let dt =
+            crate::DateTime::parse_from_rfc3339(crate::agent::REFERENCE_INSTANT_RFC3339).unwrap();
+        for spec in crate::agent::SPECIFIERS {
+            let formats = {
+                use core::fmt::Write;
+                let mut s = String::new();
+                write!(s, "{}", dt.format(spec.spec)).is_ok()
+            };
+            assert_eq!(check_output_format(spec.spec).is_ok(), formats, "{}", spec.spec);
+        }
+    }
+
+    #[test]
+    fn bad_specifier_is_escaped() {
+        for bad in ["%\u{1b}[2J", "%\u{7}", "%\r", "%\u{202e}x", "%\0"] {
+            let m = check_format(bad).unwrap_err().message;
+            assert!(!m.chars().any(|c| c.is_control() || c == '\u{202e}'), "{:?}", m);
+        }
     }
 
     #[test]

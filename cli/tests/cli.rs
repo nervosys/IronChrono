@@ -10,9 +10,15 @@ fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_ironchrono"))
 }
 
-/// Run with `--now` fixed; returns (exit code, parsed stdout).
+/// Run (with `--now` fixed for the `now` command, the only one that reads the clock);
+/// returns (exit code, parsed stdout).
 fn run(args: &[&str]) -> (i32, Value) {
-    let out = bin().args(args).args(["--now", NOW]).output().expect("spawn");
+    let mut c = bin();
+    c.args(args);
+    if args.first() == Some(&"now") {
+        c.args(["--now", NOW]);
+    }
+    let out = c.output().expect("spawn");
     let text = String::from_utf8(out.stdout).expect("utf8");
     let v: Value =
         serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("not JSON ({e}): {text:?}"));
@@ -353,7 +359,7 @@ fn usage_errors_and_exit_code_two() {
 fn negative_numbers_are_positional() {
     // `-1h` must not be mistaken for a flag; `--` also works.
     ok(&["add", NOW, "-1h"]);
-    let out = bin().args(["add", "--now", NOW, "--", NOW, "-1h"]).output().unwrap();
+    let out = bin().args(["add", "--", NOW, "-1h"]).output().unwrap();
     assert_eq!(out.status.code(), Some(0));
 }
 
@@ -573,4 +579,210 @@ fn mcp_session() {
     // Still alive after the bad input.
     let r = m.request(json!({"jsonrpc":"2.0","id":9,"method":"ping"}));
     assert_eq!(r["id"], 9);
+}
+
+// ---- security hardening ----------------------------------------------------------
+
+fn tool_call(id: u64, name: &str, args: Value) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}})
+}
+
+fn stdout_json(out: &std::process::Output) -> Value {
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("not JSON ({e}): {out:?}"))
+}
+
+#[test]
+fn non_ascii_offset_is_a_parse_error_not_a_panic() {
+    for bad in ["+a\u{20ac}", "+\u{20ac}a", "-\u{20ac}\u{20ac}\u{20ac}"] {
+        let out = bin().args(["convert", NOW, "--to", bad]).output().unwrap();
+        assert_eq!(out.status.code(), Some(3), "{bad:?}");
+        let v = stdout_json(&out);
+        assert_eq!(v["error"]["code"], "parse_invalid", "{v}");
+        assert!(String::from_utf8_lossy(&out.stderr).is_empty(), "{:?}", out.stderr);
+        let out = bin().args(["parse", "2024-03-01T12:00:00", "--offset", bad]).output().unwrap();
+        assert_eq!(out.status.code(), Some(3), "{bad:?}");
+    }
+}
+
+#[test]
+fn mcp_survives_a_non_ascii_offset() {
+    let mut m = Mcp::start();
+    let r = m.request(tool_call(1, "convert", json!({"input": NOW, "to": "+a\u{20ac}"})));
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert_eq!(r["result"]["structuredContent"]["error"]["code"], "parse_invalid");
+    let r = m.request(json!({"jsonrpc":"2.0","id":2,"method":"ping"}));
+    assert_eq!(r["id"], 2);
+}
+
+#[test]
+fn non_utf8_argument_is_a_usage_error() {
+    let bad = {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            std::ffi::OsString::from_wide(&[0x70, 0xD800, 0x71])
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            std::ffi::OsString::from_vec(vec![0x70, 0xFF, 0x71])
+        }
+    };
+    let out = bin().arg("parse").arg(bad).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(stdout_json(&out)["error"]["code"], "usage");
+    assert!(String::from_utf8_lossy(&out.stderr).is_empty());
+}
+
+#[test]
+fn mcp_invalid_utf8_line_is_answered_and_the_server_lives() {
+    let mut m = Mcp::start();
+    {
+        let stdin = m.child.stdin.as_mut().unwrap();
+        stdin.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"\xff\xfe\"}\n").unwrap();
+        stdin.flush().unwrap();
+    }
+    let r = m.recv();
+    assert_eq!(r["error"]["code"], -32700, "{r}");
+    assert!(r["id"].is_null());
+    let r = m.request(json!({"jsonrpc":"2.0","id":2,"method":"ping"}));
+    assert_eq!(r["id"], 2);
+}
+
+#[test]
+fn mcp_oversized_line_is_refused_and_the_stream_resyncs() {
+    let mut m = Mcp::start();
+    let big =
+        format!(r#"{{"jsonrpc":"2.0","id":1,"method":"ping","pad":"{}"}}"#, "A".repeat(2 << 20));
+    // Write from a thread: the server must answer while we are still sending.
+    let mut stdin = m.child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || {
+        let _ = writeln!(stdin, "{big}");
+        let _ = writeln!(stdin, r#"{{"jsonrpc":"2.0","id":2,"method":"ping"}}"#);
+        let _ = stdin.flush();
+        stdin
+    });
+    let r = m.recv();
+    assert_eq!(r["error"]["code"], -32600, "{r}");
+    assert!(r["error"]["message"].as_str().unwrap().contains("too large"));
+    assert!(r["id"].is_null());
+    let r = m.recv();
+    assert_eq!(r["id"], 2);
+    m.child.stdin = Some(writer.join().unwrap());
+}
+
+#[test]
+fn mcp_restricts_ids_and_jsonrpc_version() {
+    let mut m = Mcp::start();
+    for id in [json!(1.5), json!([1]), json!({"a":1}), json!(true), json!("x".repeat(257))] {
+        let r = m.request(json!({"jsonrpc":"2.0","id":id,"method":"ping"}));
+        assert_eq!(r["error"]["code"], -32600, "{id}");
+        assert!(r["id"].is_null());
+    }
+    let r = m.request(json!({"jsonrpc":"2.0","id":"x".repeat(256),"method":"ping"}));
+    assert!(r["result"].is_object());
+    let r = m.request(json!({"jsonrpc":"1.0","id":3,"method":"ping"}));
+    assert_eq!(r["error"]["code"], -32600);
+    let r = m.request(json!({"id":4,"method":"ping"}));
+    assert_eq!(r["error"]["code"], -32600);
+    // tools/call works before initialize (documented leniency).
+    let r = m.request(tool_call(5, "parse", json!({"input": NOW})));
+    assert_eq!(r["result"]["isError"], false);
+}
+
+#[test]
+fn arguments_over_4096_bytes_are_a_usage_error() {
+    let long = "1".repeat(4097);
+    let out = bin().args(["parse", &long]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let v = stdout_json(&out);
+    assert_eq!(v["error"]["code"], "usage");
+    let msg = v["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("input") && msg.contains("4096"), "{msg}");
+    assert!(msg.len() < 400, "message must not echo the argument");
+    // Exactly at the limit is accepted (it fails to parse, but not as a usage error).
+    let at = "1".repeat(4096);
+    let out = bin().args(["parse", &at]).output().unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    let mut m = Mcp::start();
+    let r = m.request(tool_call(1, "parse", json!({"input": long})));
+    assert_eq!(r["result"]["isError"], true);
+    assert_eq!(r["result"]["structuredContent"]["error"]["code"], "usage");
+}
+
+#[test]
+fn echoed_input_in_errors_is_cut_to_200_chars() {
+    let long = "x".repeat(3000);
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["parse", &long],
+        vec!["add", NOW, &long],
+        vec!["convert", NOW, "--to", &long],
+        vec!["frobnicate", &long],
+        vec!["parse", NOW, "--policy", &long],
+    ];
+    for args in cases {
+        let out = bin().args(&args).output().unwrap();
+        let v = stdout_json(&out);
+        let msg = v["error"]["message"].as_str().unwrap();
+        assert!(!msg.contains(&"x".repeat(201)), "{args:?}: {} bytes", msg.len());
+    }
+    let out = bin().args(["parse", NOW, &format!("--{}", "y".repeat(3000))]).output().unwrap();
+    let msg = stdout_json(&out)["error"]["message"].as_str().unwrap().to_string();
+    assert!(!msg.contains(&"y".repeat(201)), "{msg}");
+    assert!(msg.contains('\u{2026}'));
+}
+
+#[test]
+fn text_mode_escapes_control_and_bidi_characters() {
+    let out =
+        bin().args(["format", NOW, "\x1b[2J\u{202e}x\u{85}%Y\u{2066}", "--text"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(!s.contains('\x1b') && !s.contains('\u{202e}') && !s.contains('\u{85}'), "{s:?}");
+    assert!(!s.contains('\u{2066}'), "{s:?}");
+    assert!(s.contains("\\u{1b}") && s.contains("\\u{202e}"), "{s:?}");
+    // Errors are escaped too, including the unknown-flag message (JSON or text).
+    let out = bin().args(["parse", NOW, "--\x1b[31m", "--text"]).output().unwrap();
+    let s = String::from_utf8(out.stdout).unwrap();
+    assert!(!s.contains('\x1b'), "{s:?}");
+    let out = bin().args(["parse", NOW, "--\x1b[31m"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&out.stdout).contains('\x1b'));
+}
+
+#[test]
+fn global_flags_count_only_before_double_dash_and_not_as_values() {
+    // After `--`, --help is the input.
+    let out = bin().args(["parse", "--", "--help"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+    assert_eq!(stdout_json(&out)["ok"], false);
+    // As a flag's value, --text is the value (and the output stays JSON).
+    let out = bin().args(["parse", "2024-03-01", "--format", "--text"]).output().unwrap();
+    assert!(out.stdout.starts_with(b"{"), "{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(stdout_json(&out)["ok"], false);
+    // --help before `--` still works.
+    let out = bin().args(["parse", "-h"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Usage: ironchrono parse"));
+    // --text still works in front of the command.
+    let out = bin().args(["--text", "parse", NOW]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "2024-03-01T12:00:00+00:00");
+}
+
+#[test]
+fn help_on_a_closed_pipe_does_not_panic() {
+    let mut child =
+        bin().arg("--help").stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("panicked"), "{:?}", out.stderr);
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn now_flag_is_only_accepted_by_now() {
+    err(&["parse", NOW, "--now", "garbage"], 2, "usage");
+    err(&["errors", "--now", NOW], 2, "usage");
+    let out = bin().args(["now", "--now", NOW]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
 }

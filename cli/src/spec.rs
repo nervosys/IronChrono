@@ -1,6 +1,6 @@
 //! The command table: one source for CLI parsing, `--help` and MCP tool schemas.
 
-use crate::output::{CliError, EXIT_CODES};
+use crate::output::{CliError, EXIT_CODES, MAX_ARG, clip};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
@@ -31,7 +31,7 @@ const fn req_flag(name: &'static str, desc: &'static str) -> Param {
 
 const NOW: Param = flag(
     "now",
-    "Fixed clock instant (RFC 3339) for reproducible output; accepted by every command",
+    "Fixed clock instant (RFC 3339) for reproducible output; only `now` reads the clock",
 );
 const OFFSET: Param = flag(
     "offset",
@@ -65,44 +65,37 @@ pub const COMMANDS: &[Command] = &[
             flag("format", "strftime format to parse with, instead of the auto-detected list"),
             OFFSET,
             POLICY,
-            NOW,
         ],
     },
     Command {
         name: "format",
         summary: "Format a timestamp with a strftime string",
         example: "ironchrono format 2024-03-01T12:00:00Z %Y/%m/%d",
-        params: &[INPUT, pos("format", "strftime format string"), OFFSET, POLICY, NOW],
+        params: &[INPUT, pos("format", "strftime format string"), OFFSET, POLICY],
     },
     Command {
         name: "convert",
         summary: "Convert a timestamp to another offset",
         example: "ironchrono convert 2024-03-01T12:00:00Z --to +05:30",
-        params: &[
-            INPUT,
-            req_flag("to", "Target zone: +HH:MM, -HH:MM, Z or local"),
-            OFFSET,
-            POLICY,
-            NOW,
-        ],
+        params: &[INPUT, req_flag("to", "Target zone: +HH:MM, -HH:MM, Z or local"), OFFSET, POLICY],
     },
     Command {
         name: "add",
         summary: "Add a duration to a timestamp",
         example: "ironchrono add 2024-01-31T00:00:00Z P1M",
-        params: &[INPUT, DURATION, OFFSET, POLICY, NOW],
+        params: &[INPUT, DURATION, OFFSET, POLICY],
     },
     Command {
         name: "sub",
         summary: "Subtract a duration from a timestamp",
         example: "ironchrono sub 2024-03-01T12:00:00Z 2h",
-        params: &[INPUT, DURATION, OFFSET, POLICY, NOW],
+        params: &[INPUT, DURATION, OFFSET, POLICY],
     },
     Command {
         name: "diff",
         summary: "Signed difference b - a",
         example: "ironchrono diff 2024-03-01T00:00:00Z 2024-03-02T01:30:00Z",
-        params: &[pos("a", "First timestamp"), pos("b", "Second timestamp"), OFFSET, POLICY, NOW],
+        params: &[pos("a", "First timestamp"), pos("b", "Second timestamp"), OFFSET, POLICY],
     },
     Command {
         name: "round",
@@ -113,7 +106,6 @@ pub const COMMANDS: &[Command] = &[
             pos("duration", "Rounding step: exact units only (no months or years)"),
             OFFSET,
             POLICY,
-            NOW,
         ],
     },
     Command {
@@ -125,26 +117,25 @@ pub const COMMANDS: &[Command] = &[
             pos("duration", "Truncation step: exact units only (no months or years)"),
             OFFSET,
             POLICY,
-            NOW,
         ],
     },
     Command {
         name: "specifiers",
         summary: "The strftime specifier table",
         example: "ironchrono specifiers --group date",
-        params: &[flag("group", "Only this group"), NOW],
+        params: &[flag("group", "Only this group")],
     },
     Command {
         name: "errors",
         summary: "Every error code with its hint and exit code",
         example: "ironchrono errors",
-        params: &[NOW],
+        params: &[],
     },
     Command {
         name: "schema",
         summary: "JSON Schema (draft 2020-12) of the envelopes and every command's output",
         example: "ironchrono schema",
-        params: &[NOW],
+        params: &[],
     },
     Command {
         name: "mcp",
@@ -170,8 +161,21 @@ pub fn validate(cmd: &Command, args: &Args) -> Result<(), CliError> {
         if !cmd.params.iter().any(|p| p.name == k) {
             let known: Vec<_> = cmd.params.iter().map(|p| p.name).collect();
             return Err(CliError::usage(
-                format!("{}: unknown argument {k:?}", cmd.name),
+                format!("{}: unknown argument {:?}", cmd.name, clip(k)),
                 format!("Known arguments: {}.", known.join(", ")),
+            ));
+        }
+    }
+    for (k, v) in args {
+        if v.len() > MAX_ARG {
+            return Err(CliError::usage(
+                format!(
+                    "{}: argument {:?} is {} bytes; the limit is {MAX_ARG}",
+                    cmd.name,
+                    clip(k),
+                    v.len()
+                ),
+                format!("Each argument must be at most {MAX_ARG} bytes."),
             ));
         }
     }
@@ -185,7 +189,7 @@ pub fn validate(cmd: &Command, args: &Args) -> Result<(), CliError> {
             }
             Some(v) if !p.choices.is_empty() && !p.choices.contains(&v.as_str()) => {
                 return Err(CliError::usage(
-                    format!("{}: {:?} is not a valid {}", cmd.name, v, p.name),
+                    format!("{}: {:?} is not a valid {}", cmd.name, clip(v), p.name),
                     format!("Choose one of: {}.", p.choices.join(", ")),
                 ));
             }
@@ -223,16 +227,19 @@ pub fn command_help(cmd: &Command) -> String {
 
 pub fn help() -> String {
     let mut s = String::from(
-        "ironchrono - time for agents: JSON on stdout, stable exit codes, deterministic with --now\n\n\
+        "ironchrono - time for agents: JSON on stdout, stable exit codes, deterministic: only `now` reads the clock, and `--now` fixes it\n\n\
          Usage: ironchrono <command> [args] [--text]\n\nCommands:\n",
     );
     for c in COMMANDS {
         s.push_str(&format!("  {:<11}{}\n", c.name, c.summary));
     }
     s.push_str(
-        "\nGlobal flags:\n  --text       human-readable output instead of JSON\n  \
-         --now <t>    fixed clock (RFC 3339); never reads the system clock\n  \
+        "\nGlobal flags (before `--`, never as another flag's value):\n  \
+         --text       human-readable output instead of JSON\n  \
          --help, -h   this text (or `<command> --help`)\n  --version, -V\n\n\
+         Only `now` reads the clock; `now --now <t>` fixes it (RFC 3339).\n\
+         Limits: an argument is at most 4096 bytes (usage error, exit 2); output is at most\n\
+         65536 bytes (out_of_range, exit 4); input echoed in error messages is cut to 200 chars.\n\n\
          Output: one JSON object per invocation. Success: {\"ok\":true,\"command\":...}.\n\
          Failure: {\"ok\":false,\"error\":{\"code\",\"message\",\"hint\"}} on stdout.\n\n\
          Exit codes:\n",

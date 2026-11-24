@@ -41,7 +41,7 @@ impl TimeZone {
         }
 
         if tz_string == "localtime" {
-            return Self::from_tz_data(&fs::read("/etc/localtime")?);
+            return Self::from_tz_data(&read_tz_file(Path::new("/etc/localtime"))?);
         }
 
         // attributes are not allowed on if blocks in Rust 1.38
@@ -54,11 +54,11 @@ impl TimeZone {
 
         let mut chars = tz_string.chars();
         if chars.next() == Some(':') {
-            return Self::from_file(&mut find_tz_file(chars.as_str())?);
+            return Self::from_tz_data(&find_tz_file(chars.as_str())?);
         }
 
-        if let Ok(mut file) = find_tz_file(tz_string) {
-            return Self::from_file(&mut file);
+        if let Ok(bytes) = find_tz_file(tz_string) {
+            return Self::from_tz_data(&bytes);
         }
 
         // TZ string extensions are not allowed
@@ -85,13 +85,6 @@ impl TimeZone {
         let new = Self { transitions, local_time_types, leap_seconds, extra_rule };
         new.as_ref().validate()?;
         Ok(new)
-    }
-
-    /// Construct a time zone from the contents of a time zone file
-    fn from_file(file: &mut File) -> Result<Self, Error> {
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        Self::from_tz_data(&bytes)
     }
 
     /// Construct a time zone from the contents of a time zone file
@@ -606,22 +599,46 @@ impl LocalTimeType {
     pub(super) const UTC: LocalTimeType = Self { ut_offset: 0, is_dst: false, name: None };
 }
 
-/// Open the TZif file corresponding to a TZ string
-fn find_tz_file(path: impl AsRef<Path>) -> Result<File, Error> {
+/// The largest time zone file read (IronChrono). Real TZif files are a few
+/// kilobytes; the cap stops a `TZ` that names a device, a pipe or a huge file
+/// from exhausting memory or blocking `Local::now()`.
+const MAX_TZ_FILE_LEN: u64 = 1 << 20;
+
+/// Read a time zone file: a regular file of at most [`MAX_TZ_FILE_LEN`] bytes.
+fn read_tz_file(path: &Path) -> Result<Vec<u8>, Error> {
+    // Opening a FIFO blocks until a writer appears, so check before opening;
+    // check the handle too, in case the path changed in between.
+    if !fs::metadata(path)?.is_file() {
+        return Err(Error::InvalidTzFile("time zone path is not a regular file"));
+    }
+    let file = File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(Error::InvalidTzFile("time zone path is not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_TZ_FILE_LEN + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_TZ_FILE_LEN {
+        return Err(Error::InvalidTzFile("time zone file is too large"));
+    }
+    Ok(bytes)
+}
+
+/// Read the TZif file corresponding to a TZ string
+fn find_tz_file(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {
     // Don't check system timezone directories on non-UNIX platforms
     #[cfg(not(unix))]
-    return Ok(File::open(path)?);
+    return read_tz_file(path.as_ref());
 
     #[cfg(unix)]
     {
         let path = path.as_ref();
         if path.is_absolute() {
-            return Ok(File::open(path)?);
+            return read_tz_file(path);
         }
 
         for folder in &ZONE_INFO_DIRECTORIES {
-            if let Ok(file) = File::open(PathBuf::from(folder).join(path)) {
-                return Ok(file);
+            if let Ok(bytes) = read_tz_file(&PathBuf::from(folder).join(path)) {
+                return Ok(bytes);
             }
         }
 
@@ -985,5 +1002,29 @@ mod tests {
         assert!(near_min.find_local_time_type_from_local(local).is_ok());
 
         Ok(())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tz_file_must_be_a_small_regular_file() {
+        use super::{MAX_TZ_FILE_LEN, read_tz_file};
+        use std::fs::{self, File};
+        use std::io::Write;
+        use std::path::Path;
+        // A device would be read forever (and a FIFO would block in `open`).
+        assert!(matches!(read_tz_file(Path::new("/dev/zero")), Err(Error::InvalidTzFile(_))));
+        assert!(matches!(TimeZone::from_posix_tz(":/dev/zero"), Err(Error::InvalidTzFile(_))));
+        assert!(TimeZone::from_posix_tz("/dev/zero").is_err());
+
+        let dir = std::env::temp_dir().join(format!("ironchrono-tz-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big");
+        let f = File::create(&big).unwrap();
+        f.set_len(MAX_TZ_FILE_LEN + 1).unwrap();
+        assert!(matches!(read_tz_file(&big), Err(Error::InvalidTzFile(_))));
+        let small = dir.join("small");
+        File::create(&small).unwrap().write_all(b"TZif").unwrap();
+        assert_eq!(read_tz_file(&small).unwrap(), b"TZif");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

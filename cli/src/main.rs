@@ -2,6 +2,7 @@
 
 // CliError carries owned strings on purpose: errors are rare and are printed once.
 #![allow(clippy::result_large_err)]
+#![forbid(unsafe_code)]
 
 mod commands;
 mod duration;
@@ -27,7 +28,22 @@ fn fail(e: &CliError, text: bool) -> i32 {
     e.exit
 }
 
-fn parse_cli(cmd: &spec::Command, argv: &[String]) -> Result<Args, CliError> {
+/// What to do once the command line is understood.
+enum Action {
+    Help,
+    Serve,
+    Print(Value),
+}
+
+/// What `parse_cli` found: the arguments, or a request for help.
+enum Parsed {
+    Args(Args),
+    Help,
+}
+
+/// Parse a command's argv. `--text`, `--help` and `-h` are global flags: they count only
+/// before `--` and never as the value of a flag that takes one.
+fn parse_cli(cmd: &spec::Command, argv: &[String], text: &mut bool) -> Result<Parsed, CliError> {
     let mut args = Args::new();
     let mut positionals = Vec::new();
     let mut i = 0;
@@ -35,10 +51,16 @@ fn parse_cli(cmd: &spec::Command, argv: &[String]) -> Result<Args, CliError> {
     while i < argv.len() {
         let t = &argv[i];
         i += 1;
-        if only_positional || !t.starts_with("--") {
+        if only_positional {
             positionals.push(t.clone());
         } else if t == "--" {
             only_positional = true;
+        } else if t == "--text" {
+            *text = true;
+        } else if t == "--help" || t == "-h" {
+            return Ok(Parsed::Help);
+        } else if !t.starts_with("--") {
+            positionals.push(t.clone());
         } else {
             let (name, inline) = match t[2..].split_once('=') {
                 Some((n, v)) => (n, Some(v.to_string())),
@@ -52,7 +74,7 @@ fn parse_cli(cmd: &spec::Command, argv: &[String]) -> Result<Args, CliError> {
                     .map(|p| format!("--{}", p.name))
                     .collect();
                 return Err(CliError::usage(
-                    format!("{}: unknown flag --{name}", cmd.name),
+                    format!("{}: unknown flag {:?}", cmd.name, output::clip(&format!("--{name}"))),
                     format!("Flags: {}, --text. {}", flags.join(", "), spec::usage_line(cmd)),
                 ));
             };
@@ -90,13 +112,37 @@ fn parse_cli(cmd: &spec::Command, argv: &[String]) -> Result<Args, CliError> {
         args.insert((*n).to_string(), v);
     }
     spec::validate(cmd, &args)?;
-    Ok(args)
+    Ok(Parsed::Args(args))
+}
+
+/// Write plain text to stdout; a closed pipe is the reader's choice, not a panic.
+fn print_text(s: &str) {
+    let mut out = std::io::stdout().lock();
+    let _ = write!(out, "{s}").and_then(|()| out.flush());
 }
 
 fn real_main() -> i32 {
-    let mut argv: Vec<String> = std::env::args().skip(1).collect();
-    let text = argv.iter().any(|a| a == "--text");
-    argv.retain(|a| a != "--text");
+    let mut argv: Vec<String> = Vec::new();
+    for a in std::env::args_os().skip(1) {
+        match a.into_string() {
+            Ok(s) => argv.push(s),
+            Err(_) => {
+                return fail(
+                    &CliError::usage(
+                        "an argument is not valid UTF-8",
+                        "Pass arguments as UTF-8 text.",
+                    ),
+                    false,
+                );
+            }
+        }
+    }
+    let mut text = false;
+    // Global flags in front of the command.
+    while argv.first().is_some_and(|a| a == "--text") {
+        text = true;
+        argv.remove(0);
+    }
 
     let Some(first) = argv.first().cloned() else {
         return fail(
@@ -109,10 +155,11 @@ fn real_main() -> i32 {
     };
     match first.as_str() {
         "--help" | "-h" | "help" => {
-            print!("{}", spec::help());
+            print_text(&spec::help());
             return EXIT_OK;
         }
         "--version" | "-V" => {
+            let text = text || argv[1..].iter().take_while(|a| *a != "--").any(|a| a == "--text");
             emit(
                 &output::ok(
                     "version",
@@ -124,25 +171,29 @@ fn real_main() -> i32 {
         }
         _ => {}
     }
+    let rest = &argv[1..];
     let Some(cmd) = spec::find(&first) else {
+        let text = text || rest.iter().take_while(|a| *a != "--").any(|a| a == "--text");
         return fail(
             &CliError::usage(
-                format!("unknown command {first:?}"),
+                format!("unknown command {:?}", output::clip(&first)),
                 format!("Commands: {}.", spec::names().join(", ")),
             ),
             text,
         );
     };
-    let rest = &argv[1..];
-    if rest.iter().any(|a| a == "--help" || a == "-h") {
-        print!("{}", spec::command_help(cmd));
-        return EXIT_OK;
-    }
-    if cmd.name == "mcp" {
-        return mcp::serve();
-    }
-    match parse_cli(cmd, rest).and_then(|args| commands::run(cmd.name, &args)) {
-        Ok(v) => {
+    let outcome = output::guard(|| match parse_cli(cmd, rest, &mut text)? {
+        Parsed::Help => Ok(Action::Help),
+        Parsed::Args(_) if cmd.name == "mcp" => Ok(Action::Serve),
+        Parsed::Args(args) => commands::run(cmd.name, &args).map(Action::Print),
+    });
+    match outcome {
+        Ok(Action::Help) => {
+            print_text(&spec::command_help(cmd));
+            EXIT_OK
+        }
+        Ok(Action::Serve) => mcp::serve(),
+        Ok(Action::Print(v)) => {
             emit(&v, text);
             EXIT_OK
         }
@@ -151,5 +202,9 @@ fn real_main() -> i32 {
 }
 
 fn main() {
+    // A panic must not reveal toolchain paths or a backtrace; `real_main` reports it as exit 1.
+    std::panic::set_hook(Box::new(|_| {
+        eprintln!("ironchrono: internal error; please report it as a bug");
+    }));
     std::process::exit(real_main());
 }

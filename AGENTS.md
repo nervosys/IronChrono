@@ -89,16 +89,26 @@ If this table and `ironchrono errors` disagree, the command is right.
 3. **Zones.** Only `+HH:MM`, `-HH:MM`, `Z` and `local` work. IANA names such as `Europe/Paris` fail
    with `unsupported_time_zone`. Do not substitute a fixed offset for one silently: a fixed offset
    is wrong across DST.
-4. **Always pass `--now` in tests** (and `now` in MCP calls). Without it the CLI reads the system
+4. **Always pass `--now` to the `now` command in tests** (and `now` in MCP calls); no other command
+   accepts it or reads the clock. Without it `now` reads the system
    clock and results are not reproducible. In Rust, take `&dyn chrono::agent::Clock` and use
    `FixedClock` in tests.
 5. **Months are not durations.** `1mo` clamps to month end (Jan 31 + 1mo = Feb 29 in 2024). Months
    apply before exact units. Use `d` or `h` when you mean a fixed span.
 6. **Check formats before use.** `chrono::agent::check_format` (or the `parse_bad_format` error)
-   names the bad specifier and its position. Look specifiers up in `ironchrono specifiers`; do not
+   names the bad specifier and its position. To format with a string you did not write, use
+   `check_output_format`: it also rejects specifiers valid only for parsing (`%#z`), so the
+   formatting that follows cannot fail. Look specifiers up in `ironchrono specifiers`; do not
    recall them from another language's strftime.
 7. **Rounding** works only inside the years 1677 to 2262 (64-bit nanoseconds).
 8. **Read `error.code`, not the message.** Messages are for people and may be reworded.
+9. **Untrusted input takes the checked path.** chrono 0.4's operators and a few conveniences panic
+   by design, and IronChrono keeps that behaviour for compatibility: `+`/`-` on `DateTime`,
+   `NaiveDate`, `NaiveDateTime` and `TimeDelta` on overflow; deprecated constructors such as
+   `TimeDelta::seconds` and `NaiveDate::from_ymd`; `to_rfc2822()` outside years 0 to 9999; and
+   `format(f).to_string()` when `f` cannot format. With input you did not write, use
+   `checked_add_signed` and the other `checked_*` / `try_*` forms, `check_output_format`, and
+   `write!` (which returns an error instead of panicking). SECURITY-AUDIT.md lists them.
 
 ### Using the Rust library
 
@@ -108,7 +118,7 @@ chrono = { package = "ironchrono", version = "0.4", features = ["agent"] }
 
 Not published to crates.io yet; use `git = "https://github.com/nervosys/IronChrono"` until it is.
 Code is written as `use chrono::...`, exactly as for chrono. The agent layer is in `chrono::agent`:
-`ErrorCode`, `Diagnose`, `Diagnosis`, `check_format`, `LocalPolicy`, `ResolveLocal`,
+`ErrorCode`, `Diagnose`, `Diagnosis`, `check_format`, `check_output_format`, `LocalPolicy`, `ResolveLocal`,
 `LocalTimeError`, `Clock`, `SystemClock`, `FixedClock`, `SteppingClock`, `SPECIFIERS`,
 `Specifier`, `REFERENCE_INSTANT_RFC3339`, `Facts`, `facts`, `naive_facts`. See README.md for
 examples.
