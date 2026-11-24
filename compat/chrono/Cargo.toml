@@ -1,0 +1,60 @@
+# The package named `chrono` that re-exports IronChrono, for
+#
+#     [patch.crates-io]
+#     chrono = { path = "<IronChrono>/compat/chrono" }
+#
+# Cargo patches a package only with one of the same name, so this is what lets
+# every crate in a graph (sqlx's chrono feature included) build against
+# IronChrono. Its types are IronChrono's own, re-exported, so a crate that
+# depends on `ironchrono` directly and one that names `chrono` share them.
+#
+# Every feature of `ironchrono`, including the implicit ones its optional
+# dependencies create, is forwarded under the same name: a dependent that
+# enables `chrono/serde` or `chrono/clock` must find it here.
+[package]
+name = "chrono"
+version = "0.4.46"
+description = "Compatibility package: the `chrono` name for IronChrono, for [patch.crates-io]"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nervosys/IronChrono"
+edition = "2021"
+rust-version = "1.62.0"
+publish = false
+
+[lib]
+name = "chrono"
+path = "src/lib.rs"
+
+# Its own workspace (see the root Cargo.toml).
+[workspace]
+
+[dependencies]
+iron = { package = "ironchrono", path = "../..", version = "=0.4.46", default-features = false }
+
+[features]
+default = ["iron/default"]
+alloc = ["iron/alloc"]
+defmt = ["iron/defmt"]
+libc = ["iron/libc"]
+winapi = ["iron/winapi"]
+std = ["iron/std"]
+clock = ["iron/clock"]
+now = ["iron/now"]
+core-error = ["iron/core-error"]
+oldtime = ["iron/oldtime"]
+wasmbind = ["iron/wasmbind"]
+unstable-locales = ["iron/unstable-locales"]
+rkyv = ["iron/rkyv"]
+rkyv-16 = ["iron/rkyv-16"]
+rkyv-32 = ["iron/rkyv-32"]
+rkyv-64 = ["iron/rkyv-64"]
+rkyv-validation = ["iron/rkyv-validation"]
+agent = ["iron/agent"]
+__internal_bench = ["iron/__internal_bench"]
+serde = ["iron/serde"]
+pure-rust-locales = ["iron/pure-rust-locales"]
+arbitrary = ["iron/arbitrary"]
+wasm-bindgen = ["iron/wasm-bindgen"]
+js-sys = ["iron/js-sys"]
+windows-link = ["iron/windows-link"]
+iana-time-zone = ["iron/iana-time-zone"]

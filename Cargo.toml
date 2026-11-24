@@ -1,15 +1,26 @@
+# IronChrono: the maintained, agentic-first successor to chrono, forked from
+# chronotope/chrono at 6adaa52 (0.4.45 plus two unreleased fixes). The library
+# keeps the name `chrono`, so replacing the dependency line is the whole
+# migration; `compat/chrono` re-exports it under the package name `chrono` for
+# `[patch.crates-io]`, which swaps it in for every crate in a graph.
+[workspace]
+members = [".", "cli"]
+# compat/chrono is its own workspace: both it and this package build a library
+# named `chrono`, which one workspace build cannot uplift side by side.
+exclude = ["bench", "fuzz", "ci/core-test", "compat/chrono"]
+
 [package]
-name = "chrono"
-version = "0.4.45"
-description = "Date and time library for Rust"
-homepage = "https://github.com/chronotope/chrono"
-documentation = "https://docs.rs/chrono/"
-repository = "https://github.com/chronotope/chrono"
-keywords = ["date", "time", "calendar"]
+name = "ironchrono"
+version = "0.4.46"
+description = "Maintained, agentic-first successor to chrono: a drop-in replacement with the same API"
+homepage = "https://github.com/nervosys/IronChrono"
+documentation = "https://docs.rs/ironchrono/"
+repository = "https://github.com/nervosys/IronChrono"
+keywords = ["date", "time", "calendar", "chrono", "agent"]
 categories = ["date-and-time"]
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-include = ["src/*", "tests/*.rs", "LICENSE.txt", "CITATION.cff"]
+include = ["src/*", "tests/*.rs", "LICENSE.txt", "NOTICE.md", "CITATION.cff"]
 edition = "2021"
 rust-version = "1.62.0"
 
@@ -30,6 +41,9 @@ core-error = []
 oldtime = []
 wasmbind = ["wasm-bindgen", "js-sys"]
 unstable-locales = ["pure-rust-locales"]
+# IronChrono's agent layer (`chrono::agent`): stable error codes, explicit
+# local-time resolution, injectable clocks, a machine-readable specifier table.
+agent = ["std", "serde"]
 # Note that rkyv-16, rkyv-32, and rkyv-64 are mutually exclusive.
 rkyv = ["dep:rkyv", "rkyv/size_32"]
 rkyv-16 = ["dep:rkyv", "rkyv?/size_16"]

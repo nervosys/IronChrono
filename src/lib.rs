@@ -571,6 +571,12 @@ pub use offset::MappedLocalTime;
 pub use offset::{FixedOffset, Offset, TimeZone, Utc};
 
 pub mod round;
+
+/// IronChrono's agent layer: stable error codes, explicit local-time
+/// resolution, injectable clocks and a machine-readable specifier table.
+#[cfg(feature = "agent")]
+#[cfg_attr(docsrs, doc(cfg(feature = "agent")))]
+pub mod agent;
 pub use round::{DurationRound, RoundingError, SubsecRound};
 
 mod weekday;

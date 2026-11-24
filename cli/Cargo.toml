@@ -1,0 +1,17 @@
+[package]
+name = "ironchrono-cli"
+version = "0.4.46"
+description = "IronChrono for agents: parse, format, convert and reason about time as JSON, on the command line or over MCP"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nervosys/IronChrono"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "ironchrono"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { package = "ironchrono", path = "..", version = "=0.4.46", features = ["agent"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
