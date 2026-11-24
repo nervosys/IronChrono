@@ -26,9 +26,59 @@ use crate::naive::{NaiveDate, NaiveDateTime};
     archive(compare(PartialEq)),
     archive_attr(derive(Clone, Copy, PartialEq, Eq, Hash, Debug))
 )]
-#[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize, rkyv_08::Deserialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedFixedOffset08,
+        resolver = FixedOffsetResolver08,
+        compare(PartialEq),
+        derive(Clone, Copy, PartialEq, Eq, Hash, Debug),
+        bytecheck(verify)
+    )
+)]
 pub struct FixedOffset {
     local_minus_utc: i32,
+}
+
+#[cfg(feature = "rkyv-validation")]
+impl_check_bytes_07!(
+    ArchivedFixedOffset, "local_minus_utc";
+    local_minus_utc: i32; FixedOffset::secs_are_valid(local_minus_utc)
+);
+
+impl FixedOffset {
+    /// Whether `secs` is the offset of a real `FixedOffset`. Used to validate archived values
+    /// (rkyv 0.7 and 0.8).
+    #[cfg(any(feature = "rkyv-08", feature = "rkyv-validation"))]
+    const fn secs_are_valid(secs: i32) -> bool {
+        -86_400 < secs && secs < 86_400
+    }
+}
+
+#[cfg(feature = "rkyv-08")]
+mod rkyv08_verify {
+    use super::*;
+    use crate::rkyv08::invalid;
+    use rkyv_08::bytecheck::Verify;
+    use rkyv_08::rancor::{Fallible, Source};
+
+    // SAFETY: `verify` only reads `self`, which `CheckBytes` has already shown to be
+    // a valid, aligned value of the archived type.
+    unsafe impl<C> Verify<C> for ArchivedFixedOffset08
+    where
+        C: Fallible + ?Sized,
+        C::Error: Source,
+    {
+        fn verify(&self, _context: &mut C) -> Result<(), C::Error> {
+            let secs = self.local_minus_utc.to_native();
+            if FixedOffset::secs_are_valid(secs) {
+                Ok(())
+            } else {
+                Err(invalid("FixedOffset out of range"))
+            }
+        }
+    }
 }
 
 impl FixedOffset {

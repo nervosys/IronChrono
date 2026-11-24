@@ -98,9 +98,80 @@ mod tests;
     archive(compare(PartialEq, PartialOrd)),
     archive_attr(derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash))
 )]
-#[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedNaiveDate08,
+        resolver = NaiveDateResolver08,
+        compare(PartialEq, PartialOrd),
+        derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash),
+        bytecheck(verify)
+    )
+)]
 pub struct NaiveDate {
     yof: NonZeroI32, // (year << 13) | of
+}
+
+#[cfg(feature = "rkyv-08")]
+mod rkyv08_verify {
+    use super::*;
+    use crate::rkyv08::invalid;
+    use rkyv_08::bytecheck::Verify;
+    use rkyv_08::rancor::{Fallible, Source};
+
+    // SAFETY: `verify` only reads `self`, which `CheckBytes` has already shown to be
+    // a valid, aligned value of the archived type.
+    unsafe impl<C> Verify<C> for ArchivedNaiveDate08
+    where
+        C: Fallible + ?Sized,
+        C::Error: Source,
+    {
+        fn verify(&self, _context: &mut C) -> Result<(), C::Error> {
+            if NaiveDate::yof_is_valid(self.yof.get()) {
+                Ok(())
+            } else {
+                Err(invalid("NaiveDate is not a calendar date"))
+            }
+        }
+    }
+
+    impl<D> rkyv_08::Deserialize<NaiveDate, D> for ArchivedNaiveDate08
+    where
+        D: Fallible + ?Sized,
+        D::Error: Source,
+    {
+        // Deserializing re-checks the packed value, so that even an archive read with
+        // `access_unchecked` can never produce an invalid `NaiveDate`.
+        fn deserialize(&self, _deserializer: &mut D) -> Result<NaiveDate, D::Error> {
+            let yof = self.yof.get();
+            if NaiveDate::yof_is_valid(yof) {
+                Ok(NaiveDate::from_yof(yof))
+            } else {
+                Err(invalid("NaiveDate is not a calendar date"))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "rkyv-validation")]
+impl_check_bytes_07!(ArchivedNaiveDate, "yof"; yof: NonZeroI32; NaiveDate::yof_is_valid(yof.get()));
+
+impl NaiveDate {
+    /// Whether `yof` is a packed year-ordinal-flags value of a real date (the invariants
+    /// `from_yof` relies on). Used to validate archived values (rkyv 0.7 and 0.8).
+    #[cfg(any(feature = "rkyv-08", feature = "rkyv-validation"))]
+    const fn yof_is_valid(yof: i32) -> bool {
+        let year = yof >> 13;
+        if year < MIN_YEAR || year > MAX_YEAR {
+            return false;
+        }
+        if (yof & 0b1111) != YearFlags::from_year(year).0 as i32 {
+            return false;
+        }
+        let ordinal = (yof >> 4) & 0x1ff;
+        ordinal >= 1 && ordinal <= 366 && (yof & OL_MASK) <= MAX_OL
+    }
 }
 
 /// The minimum possible `NaiveDate` (January 1, 262145 BCE).

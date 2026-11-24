@@ -1,0 +1,118 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          # Native arm64 runner (free for public repositories; a larger runner
+          # is needed for a private one)
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked -p ironchrono-cli --target ${{ matrix.target }}
+      - name: Stage the binary under a versioned name
+        shell: bash
+        run: |
+          set -euo pipefail
+          ext=""
+          case "${{ matrix.target }}" in *windows*) ext=".exe" ;; esac
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/ironchrono${ext}" \
+            "dist/ironchrono-${GITHUB_REF_NAME}-${{ matrix.target }}${ext}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ironchrono-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the GitHub release
+      id-token: write      # keyless Sigstore signing and attestations
+      attestations: write  # store the build-provenance attestations
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ironchrono-*
+          path: dist
+          merge-multiple: true
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: sha256sum ironchrono-* > SHA256SUMS
+      # One provenance attestation per binary, plus one for the checksum file
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
+      - uses: sigstore/cosign-installer@v4
+      - name: Sign SHA256SUMS with Sigstore (keyless)
+        working-directory: dist
+        run: |
+          cosign sign-blob --yes \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes
+
+  # Gated on the `crates-io` environment: configure required reviewers on it,
+  # and register this repository and workflow (release.yml) as a trusted
+  # publisher on crates.io. Note: cli/Cargo.toml currently sets
+  # `publish = false`, so the second publish fails until that is changed.
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write  # exchange the OIDC token for a short-lived crates.io token
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish ironchrono
+        run: cargo publish -p ironchrono --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      # ironchrono-cli depends on the version just published; give the index time to list it
+      - name: Wait for the crates.io index
+        run: sleep 60
+      - name: Publish ironchrono-cli
+        run: cargo publish -p ironchrono-cli --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

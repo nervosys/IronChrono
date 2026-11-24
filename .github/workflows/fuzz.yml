@@ -1,0 +1,40 @@
+name: fuzz
+
+on:
+  schedule:
+    # Nightly, 03:23 UTC
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [fuzz_reader, fuzz_format, fuzz_agent, fuzz_parse, fuzz_local]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      # cargo-fuzz finds the `fuzz/` crate from the repository root
+      - name: Fuzz ${{ matrix.target }} for 600 seconds
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=600
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 30

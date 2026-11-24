@@ -4,8 +4,10 @@ version = "0.4.46"
 description = "IronChrono for agents: parse, format, convert and reason about time as JSON, on the command line or over MCP"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nervosys/IronChrono"
+readme = "../README.md"
+keywords = ["date", "time", "cli", "mcp", "agent"]
+categories = ["date-and-time", "command-line-utilities"]
 edition = "2021"
-publish = false
 
 [[bin]]
 name = "ironchrono"

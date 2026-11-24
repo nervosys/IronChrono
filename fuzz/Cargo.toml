@@ -39,3 +39,7 @@ path = "fuzz_targets/fuzz_agent.rs"
 [[bin]]
 name = "fuzz_parse"
 path = "fuzz_targets/fuzz_parse.rs"
+
+[[bin]]
+name = "fuzz_local"
+path = "fuzz_targets/fuzz_local.rs"

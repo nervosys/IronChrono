@@ -80,14 +80,18 @@ whole dependency graph (sqlx and friends included) can be moved with one
 ## Security audit (2026-11-24)
 
 - [x] CVE/RustSec/OSV, MITRE ATT&CK, NIST FIPS, CMMC 2.0 Level 2: SECURITY-AUDIT.md.
-      15 findings, 12 fixed with regression tests (1 High, 4 Medium fixed).
-- [ ] DEP-1: an additive `rkyv-08` feature (rkyv 0.7 has RUSTSEC-2026-0235 and no fix).
-- [ ] Windows-native fuzzing of the `Local` FFI path.
+      16 findings, 13 fixed with regression tests (1 High, 5 Medium fixed); LIB-6 closed the
+      forged rkyv 0.7 archives.
+- [x] DEP-1: an additive `rkyv-08` feature (rkyv 0.7 has RUSTSEC-2026-0235 and no fix).
+- [x] Windows-native fuzzing of the `Local` FFI path (`fuzz_local` under ASan,
+      `tests/windows_local.rs` sweep; Pacific zone only).
 
 ## Phase 5 — Release
 
-- [ ] CI (GitHub Actions, upstream's matrix plus the MSRV job, the proofs,
-      `cargo audit` / `cargo deny`, and a nightly fuzz run of the kept targets).
+- [x] CI written (GitHub Actions, upstream's matrix plus the MSRV job, the
+      proofs, `cargo audit` / `cargo deny`, nightly fuzzing, signed releases);
+      actionlint-clean.
+- [ ] CI running: the organization's Actions are on a billing hold (owner).
 - [ ] Publish `ironchrono` and `ironchrono-cli` to crates.io (owner).
 - [ ] Track upstream: a weekly check of chronotope/chrono for commits to
       cherry-pick, while it still receives any.

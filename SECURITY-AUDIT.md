@@ -15,8 +15,8 @@ practices IronChrono helps a system meet, and which stay with the system that us
 | Area | Result |
 |---|---|
 | Known vulnerabilities in IronChrono's code | None. Both chrono advisories checked: RUSTSEC-2020-0159 is fixed in this code; RUSTSEC-2026-0543 is chrono's "unmaintained" notice, which IronChrono answers. |
-| Known vulnerabilities in dependencies | Default features: none (2 dependencies). One in the opt-in `rkyv` feature: RUSTSEC-2026-0235 in rkyv 0.7, which has no fixed 0.7 release (DEP-1, open). |
-| New findings | 15: 1 High, 4 Medium, 6 Low, 4 Info. 12 fixed with regression tests; 1 open (DEP-1, no fixed upstream release); 2 accepted with reasons (LIB-2, CLI-10). Upstream's documented panics are listed as LIB-5. |
+| Known vulnerabilities in dependencies | Default features: none (2 dependencies). One in the opt-in `rkyv` features: RUSTSEC-2026-0235 in rkyv 0.7, which has no fixed 0.7 release (DEP-1, mitigated: use `rkyv-08`). |
+| New findings | 16: 1 High, 5 Medium, 6 Low, 4 Info. 13 fixed with regression tests; 1 mitigated (DEP-1: rkyv 0.7 has no fixed release, use `rkyv-08`); 2 accepted with reasons (LIB-2, CLI-10). Upstream's documented panics are listed as LIB-5. |
 | Memory safety | 13 `unsafe` sites, all reviewed sound (8 in production code, OS calls and two checked invariants). The CLI forbids `unsafe`. |
 | Fuzzing | 6 targets, about 64 million executions under AddressSanitizer with debug assertions: 0 crashes. The kept targets were run again after the fixes: 0 crashes. |
 | Cryptography (FIPS 140-3) | None in the library or the CLI. Nothing to validate; IronChrono cannot weaken a FIPS configuration. |
@@ -44,12 +44,13 @@ re-scores for its deployment.
 | CLI-4 | MCP lines, ids and arrays unbounded: 1 GB line → 1.6 GB, 40 MB array → 2.5 GB | Medium | 400, 770 | Fixed |
 | CLI-5 | Output amplification (`%+` ×28) and full input echoed in errors | Medium | 405 | Fixed |
 | LIB-1 | The file `TZ` names is read without limit: `/dev/zero` → 2.9 GB, a FIFO hangs `Local::now()` | Medium 4.7 `AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:N/A:H` | 770 | Fixed |
+| LIB-6 | A forged rkyv 0.7 archive of a `NaiveDate`, `NaiveTime`, `TimeDelta`, `FixedOffset` or `IsoWeek` passed validation with broken invariants, so later calls panicked or returned wrong values | Medium 4.8 `AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:L` | 20, 1287 | Fixed |
 | CLI-2 | A non-UTF-8 argument panics the CLI | Low 3.3 `AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:L` | 248, 176 | Fixed |
 | CLI-6 | `--text` mode writes control and bidi characters raw to the terminal | Low 4.3 `AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N` | 150, 117 | Fixed |
 | CLI-7 | `--text` / `--help` recognised anywhere, even after `--` or as a flag's value | Low 4.3 `AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N` | 88 | Fixed |
 | LIB-3 | `check_format` accepts `%#z`, which then fails when formatting | Low | 703 | Fixed (new `check_output_format`) |
 | LIB-4 | One diagnosis message echoed a raw control character | Low | 117, 150 | Fixed |
-| DEP-1 | rkyv 0.7 (opt-in `rkyv-*` features): RUSTSEC-2026-0235, out-of-bounds read via forged `Rc`/`Arc` metadata | Low here (see below) | 125 | Open |
+| DEP-1 | rkyv 0.7 (opt-in `rkyv-*` features): RUSTSEC-2026-0235, out-of-bounds read via forged `Rc`/`Arc` metadata | Low here (see below) | 125 | Mitigated: use `rkyv-08` |
 | CLI-8 | `--help` panics on a closed pipe | Info | 248 | Fixed |
 | CLI-9 | `--now` accepted and ignored by most commands; a hint named a Rust type; MCP accepted any `jsonrpc` | Info | 20 | Fixed |
 | LIB-2 | A relative `TZ` may contain `..` and leave the zoneinfo directories | Info | 22 | Accepted |
@@ -98,6 +99,21 @@ FIFO blocks, and checks again on the handle. `/etc/localtime` goes through the s
 After the fix, each of these falls back to the system zone in about 10 ms: `/dev/zero`,
 `:/dev/zero`, a FIFO, and a 2 GB sparse file. Test: `tz_file_must_be_a_small_regular_file`.
 
+- **LIB-6:** with `rkyv-validation` (rkyv 0.7, bytecheck 0.6) the derived `CheckBytes` checked
+  bytes only. A `NaiveDate` archive with ordinal 511 passed `from_bytes` and `month()` then
+  panicked; a `NaiveTime` with 90000 seconds passed and `hour()` returned 25; likewise a
+  `TimeDelta` with 10^9 or more nanoseconds, a `FixedOffset` beyond one day and an `IsoWeek`
+  that does not exist. It is memory safe (a zero `NaiveDate` was already rejected by the
+  `NonZeroI32` check), but an application that reads archives from an untrusted source could be
+  made to panic (A:L) or compute a wrong time (I:L); the attacker needs the application to
+  accept such archives and use the value (AC:H), hence 4.8. Fix: the five archived types have a
+  hand-written `CheckBytes` that checks the fields, then the invariant, with the same predicates
+  that rkyv 0.8's `Verify` impls use (`NaiveDate::yof_is_valid` and so on), so the two cannot
+  drift. Names, layouts and public items are unchanged; `NaiveDateTime` and `DateTime` inherit the
+  checks through their fields. Tests: `rkyv07_forged_*` in `src/rkyv07_tests.rs`, nine of which
+  fail on the previous code. The derived `Deserialize` is unchanged: rkyv 0.7 leaves unchecked
+  access of untrusted bytes to the caller, and a generic deserializer error cannot be built.
+
 ### Low and Info
 
 - **CLI-2:** `args_os()` replaces `args()`; a non-UTF-8 argument is a usage error (exit 2).
@@ -118,8 +134,11 @@ After the fix, each of these falls back to the system zone in about 10 ms: `/dev
   that validates untrusted archives mixing chrono types with `Rc`/`Arc` is affected through rkyv
   itself. rkyv 0.7 has no fixed release, and 0.8 is a different API: moving chrono's `rkyv-*`
   features to it would break every user of them, which the compatibility promise rules out.
-  Remedy (planned): an additive `rkyv-08` feature. Until then, don't validate untrusted archives
-  with rkyv 0.7. `cargo deny` fails on this advisory, and it is deliberately not added to
+  Remedy (done): the additive `rkyv-08` feature uses rkyv >= 0.8.17, which is fixed. It can be
+  enabled next to the 0.7 features, so applications migrate at their own pace; the 0.7 features
+  are unchanged. Don't validate untrusted archives with rkyv 0.7. The 0.8 integration also checks
+  chrono's own invariants, as the 0.7 one now does too (LIB-6). Tests: `rkyv08_forged_*` in
+  `src/rkyv08_tests.rs`. `cargo deny` fails on this advisory, and it is deliberately not added to
   `deny.toml`'s ignore list.
 - **LIB-2:** this matches glibc for programs that are not setuid. Changing it would break existing
   `TZ` values. Only the zone rules are taken from the file: a non-TZif target (tested with
@@ -138,7 +157,7 @@ After the fix, each of these falls back to the system zone in about 10 ms: `/dev
 | `src/naive/date/mod.rs:1520` | `NonZeroI32::new_unchecked` in `from_yof` | Sound; invariant held over ~45M fuzz runs with debug assertions |
 | `src/offset/local/tz_data.rs:160` | `CStr::from_bytes_with_nul_unchecked` up to the first NUL | Sound (Android/OHOS only) |
 | `src/offset/local/tz_info/timezone.rs` (`TimeZoneName::as_str`) | `from_utf8_unchecked` | Sound; the only constructor admits `[0-9A-Za-z+_-]` |
-| `src/offset/local/windows.rs:136` | `GetTimeZoneInformationForYear`, then `assume_init` | Sound; return checked, year clamped |
+| `src/offset/local/windows.rs:136` | `GetTimeZoneInformationForYear`, then `assume_init` | Sound; return checked, year clamped; exercised by `fuzz_local` under ASan on Windows |
 | `src/offset/local/windows.rs:263–277` | two Win32 calls, return ignored, then `assume_init` | Test-only code |
 | `src/offset/local/win_bindings.rs:23, 57` | `mem::zeroed` of all-integer `repr(C)` structs | Sound |
 
@@ -217,7 +236,7 @@ Applicable practices for a component of an assessed system:
 | CM.L2-3.4.1 / 3.4.2 Baseline configuration | Pinned versions in `Cargo.lock`; MSRV 1.62 checked; features documented | Met for the component |
 | CM.L2-3.4.6 / 3.4.7 Least functionality | Default features minimal; agent layer and CLI are opt-in; no network code | Met for the component |
 | RA.L2-3.11.2 Vulnerability scanning | `cargo audit`, `cargo deny` and OSV run in this audit | Partly: run by hand; not yet in CI (Phase 5) |
-| RA.L2-3.11.3 Remediate vulnerabilities | 12 findings fixed with regression tests; DEP-1 tracked with a plan | Partly: DEP-1 open |
+| RA.L2-3.11.3 Remediate vulnerabilities | 13 findings fixed with regression tests; DEP-1 mitigated by `rkyv-08` | Met for the component; rkyv 0.7 stays in the lockfile for the legacy features |
 | SI.L1-3.14.1 Flaw remediation | SECURITY.md: acknowledgement in 3 business days, fix or mitigation in 30 days, RUSTSEC advisory for confirmed issues | Met for the component |
 | SI.L2-3.14.6 / 3.14.7 Monitor for attacks / unauthorized use | Refusals are structured (`code`, `message`, `hint`), so a caller can log them | Supports |
 | SC.L2-3.13.2 Security engineering principles | Compatibility, input caps, no `unsafe` in the CLI, fuzzing, explicit DST policy | Met for the component |
@@ -225,12 +244,20 @@ Applicable practices for a component of an assessed system:
 
 ## Gaps and next steps
 
-1. **CI** (Phase 5). The scans and fuzzers ran by hand. Planned jobs: `cargo audit`, `cargo
-   deny`, the MSRV check, the compat proofs, and a nightly fuzz run of the kept targets.
-2. **DEP-1.** Add an additive `rkyv-08` feature, then recommend it.
-3. **Signed releases** (M1045). Sign tags, publish checksums for the CLI binaries, and use
-   crates.io trusted publishing.
-4. **Windows `Local` path.** Reviewed statically only. A Windows-native fuzz run of the FFI path
-   is still to do.
+1. **CI** (Phase 5). Workflows written and `actionlint`-clean: `test.yml` (upstream matrix plus
+   MSRV with `agent`, the agent, CLI and compat jobs), `security.yml` (`cargo audit`, `cargo deny`,
+   weekly), `fuzz.yml` (nightly, five targets) and `release.yml`. They have not run yet: the
+   organization's Actions are on a billing hold. Until they run, the scans are manual.
+2. **DEP-1.** Mitigated: the additive `rkyv-08` feature (rkyv 0.8.18) exists, and the 0.7 path
+   now validates invariants too (LIB-6). `cargo audit` and `cargo deny` still report
+   RUSTSEC-2026-0235, because the lockfile keeps rkyv 0.7 for the legacy features.
+3. **Signed releases** (M1045). `release.yml` publishes SHA256SUMS, GitHub artifact attestations
+   (Sigstore, keyless) and a cosign signature, and publishes to crates.io by trusted publishing
+   behind the `crates-io` environment. The owner still has to set up that environment (required
+   reviewers) and the trusted-publisher entry on crates.io.
+4. **Windows `Local` path.** Done for one zone. `fuzz_local` ran natively on Windows with
+   AddressSanitizer for 900 s (243,000 runs); `tests/windows_local.rs` checks 4.4 million local
+   times from 1600 to 2100 (1,503 folds, 501 gaps) and the extremes. No fault found. Both ran in
+   the machine's zone (Pacific) only: the system zone was not changed to cover others.
 5. **Run the audit again** after each upstream cherry-pick that touches `src/offset/local` or
    `src/format`.

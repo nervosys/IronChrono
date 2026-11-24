@@ -216,10 +216,59 @@ mod tests;
     archive(compare(PartialEq, PartialOrd)),
     archive_attr(derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash))
 )]
-#[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize, rkyv_08::Deserialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedNaiveTime08,
+        resolver = NaiveTimeResolver08,
+        compare(PartialEq, PartialOrd),
+        derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash),
+        bytecheck(verify)
+    )
+)]
 pub struct NaiveTime {
     secs: u32,
     frac: u32,
+}
+
+#[cfg(feature = "rkyv-08")]
+mod rkyv08_verify {
+    use super::*;
+    use crate::rkyv08::invalid;
+    use rkyv_08::bytecheck::Verify;
+    use rkyv_08::rancor::{Fallible, Source};
+
+    // SAFETY: `verify` only reads `self`, which `CheckBytes` has already shown to be
+    // a valid, aligned value of the archived type.
+    unsafe impl<C> Verify<C> for ArchivedNaiveTime08
+    where
+        C: Fallible + ?Sized,
+        C::Error: Source,
+    {
+        fn verify(&self, _context: &mut C) -> Result<(), C::Error> {
+            let secs = self.secs.to_native();
+            let frac = self.frac.to_native();
+            if NaiveTime::parts_are_valid(secs, frac) {
+                Ok(())
+            } else {
+                Err(invalid("NaiveTime out of range"))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "rkyv-validation")]
+impl_check_bytes_07!(ArchivedNaiveTime, "secs"; secs: u32, frac: u32; NaiveTime::parts_are_valid(secs, frac));
+
+impl NaiveTime {
+    /// Whether `secs` and `frac` are the parts of a real `NaiveTime`. A leap second is only
+    /// representable as `frac >= 1_000_000_000` in second 59. Used to validate archived values
+    /// (rkyv 0.7 and 0.8).
+    #[cfg(any(feature = "rkyv-08", feature = "rkyv-validation"))]
+    const fn parts_are_valid(secs: u32, frac: u32) -> bool {
+        secs < 86_400 && (frac < 1_000_000_000 || (frac < 2_000_000_000 && secs % 60 == 59))
+    }
 }
 
 #[cfg(feature = "arbitrary")]

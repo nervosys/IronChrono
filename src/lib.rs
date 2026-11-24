@@ -48,6 +48,10 @@
 //!   The implementation and API may change or even be removed in a patch release. Feedback welcome.
 //! - `oldtime`: This feature no longer has any effect; it used to offer compatibility with the
 //!   `time` 0.1 crate.
+//! - `rkyv-08`: Enable serialization/deserialization via [rkyv] 0.8 (>= 0.8.17, which is not
+//!   affected by RUSTSEC-2026-0235); archived values are validated, including chrono's own
+//!   invariants. It is additive: it can be enabled together with the `rkyv*` features (rkyv
+//!   0.7), and its types live in [`rkyv08`]. Requires Rust 1.81 or newer.
 //!
 //! Note: The `rkyv{,-16,-32,-64}` features are mutually exclusive.
 //!
@@ -509,6 +513,57 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+/// Implements rkyv 0.7's `CheckBytes` for an archived type: every field is checked as the
+/// derive would, then `$valid` (the same predicate rkyv 0.8's `Verify` impls use) must hold.
+/// A forged archive that passes the byte checks but breaks the type's invariants is rejected.
+#[cfg(feature = "rkyv-validation")]
+macro_rules! impl_check_bytes_07 {
+    ($archived:ident, $name:literal; $($field:ident: $ty:ty),+; $valid:expr) => {
+        // The fields are checked with their own `CheckBytes` first, then read.
+        impl<C: ?Sized> ::rkyv::bytecheck::CheckBytes<C> for $archived
+        where
+            $(::rkyv::Archived<$ty>: ::rkyv::bytecheck::CheckBytes<C>,)+
+        {
+            type Error = ::rkyv::bytecheck::StructCheckError;
+
+            unsafe fn check_bytes<'a>(
+                value: *const Self,
+                context: &mut C,
+            ) -> Result<&'a Self, Self::Error> {
+                $(
+                    <::rkyv::Archived<$ty> as ::rkyv::bytecheck::CheckBytes<C>>::check_bytes(
+                        ::core::ptr::addr_of!((*value).$field),
+                        context,
+                    )
+                    .map_err(|e| ::rkyv::bytecheck::StructCheckError {
+                        field_name: stringify!($field),
+                        inner: ::rkyv::bytecheck::ErrorBox::new(e),
+                    })?;
+                )+
+                $(
+                    let $field: $ty = ::rkyv::Deserialize::<$ty, ::rkyv::Infallible>::deserialize(
+                        &(*value).$field,
+                        &mut ::rkyv::Infallible,
+                    )
+                    .unwrap();
+                )+
+                if $valid {
+                    Ok(&*value)
+                } else {
+                    Err(::rkyv::bytecheck::StructCheckError {
+                        field_name: $name,
+                        // "out of range", reported through an error type that is
+                        // `std::error::Error` whenever bytecheck demands it.
+                        inner: ::rkyv::bytecheck::ErrorBox::new(
+                            u8::try_from(256u16).unwrap_err(),
+                        ),
+                    })
+                }
+            }
+        }
+    };
+}
+
 mod time_delta;
 #[doc(no_inline)]
 #[cfg(any(feature = "std", feature = "core-error"))]
@@ -666,6 +721,63 @@ pub mod rkyv {
     /// Alias of [`ArchivedTimeDelta`]
     pub type ArchivedDuration = ArchivedTimeDelta;
 }
+
+/// Zero-copy serialization/deserialization with rkyv 0.8 (feature `rkyv-08`).
+///
+/// This is the additive, supported counterpart of the [`rkyv`](mod@crate::rkyv) module: it
+/// uses rkyv >= 0.8.17 (rkyv 0.7 has RUSTSEC-2026-0235) and can be enabled together with the
+/// `rkyv-*` features. It re-exports the `Archived*` versions of chrono's types under their
+/// usual names; in the type's own module they are named `Archived<Type>08`, so that they do
+/// not collide with the rkyv 0.7 types.
+///
+/// Archived values are validated when accessed through `rkyv_08::access`,
+/// `rkyv_08::from_bytes` and friends: besides the byte-level checks, chrono's invariants
+/// (for example that a `NaiveTime` has fewer than 86400 seconds and that a `NaiveDate`
+/// packs a real calendar date) are verified, and a forged archive is rejected with an
+/// [`InvalidArchive`] error.
+#[cfg(feature = "rkyv-08")]
+pub mod rkyv08 {
+    use core::fmt;
+
+    pub use crate::datetime::ArchivedDateTime08 as ArchivedDateTime;
+    pub use crate::month::ArchivedMonth08 as ArchivedMonth;
+    pub use crate::naive::date::ArchivedNaiveDate08 as ArchivedNaiveDate;
+    pub use crate::naive::datetime::ArchivedNaiveDateTime08 as ArchivedNaiveDateTime;
+    pub use crate::naive::isoweek::ArchivedIsoWeek08 as ArchivedIsoWeek;
+    pub use crate::naive::time::ArchivedNaiveTime08 as ArchivedNaiveTime;
+    pub use crate::offset::fixed::ArchivedFixedOffset08 as ArchivedFixedOffset;
+    #[cfg(feature = "clock")]
+    pub use crate::offset::local::ArchivedLocal08 as ArchivedLocal;
+    pub use crate::offset::utc::ArchivedUtc08 as ArchivedUtc;
+    pub use crate::time_delta::ArchivedTimeDelta08 as ArchivedTimeDelta;
+    pub use crate::weekday::ArchivedWeekday08 as ArchivedWeekday;
+
+    /// Alias of [`ArchivedTimeDelta`]
+    pub type ArchivedDuration = ArchivedTimeDelta;
+
+    /// The error reported when an archived value passes the byte-level checks but breaks one
+    /// of chrono's invariants.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct InvalidArchive(pub(crate) &'static str);
+
+    impl fmt::Display for InvalidArchive {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "invalid archived chrono value: {}", self.0)
+        }
+    }
+
+    impl core::error::Error for InvalidArchive {}
+
+    pub(crate) fn invalid<E: rkyv_08::rancor::Source>(what: &'static str) -> E {
+        E::new(InvalidArchive(what))
+    }
+}
+
+#[cfg(all(test, feature = "rkyv-validation"))]
+mod rkyv07_tests;
+
+#[cfg(all(test, feature = "rkyv-08"))]
+mod rkyv08_tests;
 
 /// Out of range error type used in various converting APIs
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]

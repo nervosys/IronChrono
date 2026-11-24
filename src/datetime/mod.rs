@@ -53,6 +53,15 @@ mod tests;
     archive(compare(PartialEq, PartialOrd))
 )]
 #[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize, rkyv_08::Deserialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedDateTime08,
+        resolver = DateTimeResolver08,
+        compare(PartialEq, PartialOrd)
+    )
+)]
 pub struct DateTime<Tz: TimeZone> {
     datetime: NaiveDateTime,
     offset: Tz::Offset,

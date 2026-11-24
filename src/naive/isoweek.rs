@@ -23,12 +23,67 @@ use rkyv::{Archive, Deserialize, Serialize};
     archive(compare(PartialEq, PartialOrd)),
     archive_attr(derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash))
 )]
-#[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize, rkyv_08::Deserialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedIsoWeek08,
+        resolver = IsoWeekResolver08,
+        compare(PartialEq, PartialOrd),
+        derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash),
+        bytecheck(verify)
+    )
+)]
 pub struct IsoWeek {
     // Note that this allows for larger year range than `NaiveDate`.
     // This is crucial because we have an edge case for the first and last week supported,
     // which year number might not match the calendar year number.
     ywf: i32, // (year << 10) | (week << 4) | flag
+}
+
+#[cfg(feature = "rkyv-validation")]
+impl_check_bytes_07!(ArchivedIsoWeek, "ywf"; ywf: i32; IsoWeek::ywf_is_valid(ywf));
+
+impl IsoWeek {
+    /// Whether `ywf` is a packed year-week-flags value of a real ISO week. Used to validate
+    /// archived values (rkyv 0.7 and 0.8).
+    #[cfg(any(feature = "rkyv-08", feature = "rkyv-validation"))]
+    const fn ywf_is_valid(ywf: i32) -> bool {
+        use crate::naive::date::{MAX_YEAR, MIN_YEAR};
+        let year = ywf >> 10;
+        let week = ((ywf >> 4) & 0x3f) as u32;
+        // `IsoWeek` years run one beyond the `NaiveDate` range at either end.
+        if year < MIN_YEAR - 1 || year > MAX_YEAR + 1 {
+            return false;
+        }
+        let flags = YearFlags::from_year(year);
+        (ywf & 0xf) == flags.0 as i32 && week >= 1 && week <= flags.nisoweeks()
+    }
+}
+
+#[cfg(feature = "rkyv-08")]
+mod rkyv08_verify {
+    use super::*;
+    use crate::rkyv08::invalid;
+    use rkyv_08::bytecheck::Verify;
+    use rkyv_08::rancor::{Fallible, Source};
+
+    // SAFETY: `verify` only reads `self`, which `CheckBytes` has already shown to be
+    // a valid, aligned value of the archived type.
+    unsafe impl<C> Verify<C> for ArchivedIsoWeek08
+    where
+        C: Fallible + ?Sized,
+        C::Error: Source,
+    {
+        fn verify(&self, _context: &mut C) -> Result<(), C::Error> {
+            let ywf = self.ywf.to_native();
+            if IsoWeek::ywf_is_valid(ywf) {
+                Ok(())
+            } else {
+                Err(invalid("IsoWeek is not a valid ISO week"))
+            }
+        }
+    }
 }
 
 impl IsoWeek {

@@ -1,0 +1,41 @@
+name: security
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    # Weekly, Monday 05:17 UTC: advisories change without a commit.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  # Known failure, on purpose: RUSTSEC-2026-0235 (rkyv 0.7, DEP-1 in
+  # SECURITY-AUDIT.md) is expected to fail both `cargo audit` and the
+  # `advisories` check below until the additive rkyv-08 feature lands. Do not
+  # add an ignore to deny.toml or .cargo/audit.toml just to turn this green.
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Expected to fail the `advisories` check on RUSTSEC-2026-0235 (see the
+      # comment above); `bans`, `licenses` and `sources` are expected to pass.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          command-arguments: advisories bans licenses sources

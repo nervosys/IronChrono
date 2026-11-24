@@ -35,12 +35,26 @@ unreleased fixes (`from_isoywd_opt` returns `None` for out-of-range years; the r
   showing sqlx's `chrono` feature working through the patch with `cargo tree -i chrono` showing only
   the shim, and a run of IronMarketingIntelligence's full suite (2,135 tests) on IronChrono via the
   patch, matching its result on chrono 0.4.43.
+* The `rkyv-08` feature: rkyv 0.8 (>= 0.8.17) support for every type the `rkyv*` features cover
+  (`DateTime`, `NaiveDate`, `NaiveTime`, `NaiveDateTime`, `IsoWeek`, `TimeDelta`, `FixedOffset`,
+  `Utc`, `Local`, `Month`, `Weekday`; not the deprecated `Date`), closing DEP-1 without touching
+  the rkyv 0.7 features. It can be enabled together with them; the archived types are exported as
+  `chrono::rkyv08::Archived*`. Besides rkyv's byte checks, `access` and `from_bytes` verify
+  chrono's invariants (a calendar date, a time of day below 86400 seconds with a leap second only
+  in second 59, a `TimeDelta` in range, an offset within one day, a real ISO week), and
+  `NaiveDate` deserialization re-checks too. Requires Rust 1.81; the MSRV without the feature
+  stays 1.62.
 * README.md, AGENTS.md, llms.txt, SECURITY.md, NOTICE.md and PLAN.md.
 
 ### Security
 
 From the 2026-11-24 audit (SECURITY-AUDIT.md):
 
+* rkyv 0.7 validation (`rkyv-validation`) now rejects a forged archive that breaks an invariant
+  (LIB-6): a `NaiveDate` that is not a calendar date, a `NaiveTime` of 86400 seconds or more, an
+  out-of-range `TimeDelta` or `FixedOffset`, an `IsoWeek` that does not exist. These passed
+  before and then panicked or returned wrong values. Archived type names and layouts are
+  unchanged, and valid archives are unaffected.
 * The file `TZ` names is read only if it is a regular file of at most 1 MiB. `TZ=/dev/zero`
   exhausted memory and a FIFO blocked `Local::now()`; both now fall back to the system zone.
 * `ironchrono`: a non-ASCII offset no longer panics, and no input ends the MCP server: a panic is
@@ -52,7 +66,9 @@ From the 2026-11-24 audit (SECURITY-AUDIT.md):
   accepted only by `now`.
 * `chrono::agent::check_output_format`: rejects specifiers valid only for parsing, so formatting
   with an accepted string cannot fail. `check_format` escapes the specifier it names.
-* Fuzz targets `fuzz_agent` and `fuzz_parse`.
+* Fuzz targets `fuzz_agent`, `fuzz_parse` and `fuzz_local`; `tests/windows_local.rs` sweeps the
+  Windows `Local` path from 1600 to 2100. CI workflows for tests, advisory scans, nightly
+  fuzzing and signed releases.
 
 ### Fixed
 

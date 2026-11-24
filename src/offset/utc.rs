@@ -48,6 +48,16 @@ use crate::{Date, DateTime};
     archive_attr(derive(Clone, Copy, PartialEq, Eq, Debug, Hash))
 )]
 #[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize, rkyv_08::Deserialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedUtc08,
+        resolver = UtcResolver08,
+        compare(PartialEq),
+        derive(Clone, Copy, PartialEq, Eq, Debug, Hash)
+    )
+)]
 #[cfg_attr(all(feature = "arbitrary", feature = "std"), derive(arbitrary::Arbitrary))]
 pub struct Utc;
 

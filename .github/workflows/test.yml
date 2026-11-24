@@ -6,7 +6,7 @@ env:
 
 on:
   push:
-    branches: [main, 0.5.x]
+    branches: [master]
   pull_request:
 
 jobs:
@@ -27,6 +27,12 @@ jobs:
   # later this may be able to be included with the below
   # kept separate for now as the following don't compile on 1.60
   # * arbitrary (requires 1.63 as of v1.3.0)
+  #
+  # The committed Cargo.lock resolves dependencies that need a newer rustc, so
+  # the lockfile is regenerated with the fallback resolver (versions whose
+  # declared rust-version fits). The regenerated lockfile exists only on this
+  # runner. Only the library is checked here; the `cli` member is covered by
+  # the `cli` job on current Rust.
   rust_msrv:
     strategy:
       matrix:
@@ -34,14 +40,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Resolve dependencies for 1.62
+        run: CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo +stable generate-lockfile
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.62.0"
       - uses: Swatinem/rust-cache@v2
-      # run --lib and --doc to avoid the long running integration tests
+      # run --lib to avoid the long running integration tests
       # which are run elsewhere
       - run: |
-          cargo check --lib --features unstable-locales,wasmbind,oldtime,clock,winapi,serde
+          cargo +1.62.0 check -p ironchrono --lib --features unstable-locales,wasmbind,oldtime,clock,winapi,serde,agent
 
   rust_versions:
     strategy:
@@ -192,3 +202,46 @@ jobs:
       - run: cargo +nightly doc ${{ env.ALL_NON_EXCLUSIVE_FEATURES }} --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings --cfg docsrs"
+
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p ironchrono --features agent --lib agent --color=always -- --color=always
+      - run: cargo test -p ironchrono --features agent --doc --color=always -- --color=always
+
+  cli:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p ironchrono-cli --color=always -- --color=always
+
+  compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            compat/chrono
+            compat/verify
+      # The `chrono` shim, with the features its dependents enable
+      - run: cargo test --features serde,clock,unstable-locales,rkyv-32,arbitrary
+        working-directory: compat/chrono
+      # A real ecosystem graph (sqlx, serde_json, tokio) with `chrono` patched to the shim
+      - run: cargo test
+        working-directory: compat/verify

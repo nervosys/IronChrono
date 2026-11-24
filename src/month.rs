@@ -37,6 +37,16 @@ use crate::naive::NaiveDate;
     archive_attr(derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash))
 )]
 #[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize, rkyv_08::Deserialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedMonth08,
+        resolver = MonthResolver08,
+        compare(PartialEq, PartialOrd),
+        derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)
+    )
+)]
 #[cfg_attr(all(feature = "arbitrary", feature = "std"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Month {

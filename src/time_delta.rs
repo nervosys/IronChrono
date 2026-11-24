@@ -58,11 +58,62 @@ const SECS_PER_WEEK: i64 = 604_800;
     archive(compare(PartialEq, PartialOrd)),
     archive_attr(derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash))
 )]
-#[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize, rkyv_08::Deserialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedTimeDelta08,
+        resolver = TimeDeltaResolver08,
+        compare(PartialEq, PartialOrd),
+        derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash),
+        bytecheck(verify)
+    )
+)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct TimeDelta {
     secs: i64,
     nanos: i32, // Always 0 <= nanos < NANOS_PER_SEC
+}
+
+#[cfg(feature = "rkyv-validation")]
+impl_check_bytes_07!(ArchivedTimeDelta, "secs"; secs: i64, nanos: i32; TimeDelta::parts_are_valid(secs, nanos));
+
+impl TimeDelta {
+    /// Whether `secs` and `nanos` are the parts of a real `TimeDelta`. Used to validate archived
+    /// values (rkyv 0.7 and 0.8).
+    #[cfg(any(feature = "rkyv-08", feature = "rkyv-validation"))]
+    const fn parts_are_valid(secs: i64, nanos: i32) -> bool {
+        nanos >= 0
+            && nanos < NANOS_PER_SEC
+            && (secs > MIN.secs || (secs == MIN.secs && nanos >= MIN.nanos))
+            && (secs < MAX.secs || (secs == MAX.secs && nanos <= MAX.nanos))
+    }
+}
+
+#[cfg(feature = "rkyv-08")]
+mod rkyv08_verify {
+    use super::*;
+    use crate::rkyv08::invalid;
+    use rkyv_08::bytecheck::Verify;
+    use rkyv_08::rancor::{Fallible, Source};
+
+    // SAFETY: `verify` only reads `self`, which `CheckBytes` has already shown to be
+    // a valid, aligned value of the archived type.
+    unsafe impl<C> Verify<C> for ArchivedTimeDelta08
+    where
+        C: Fallible + ?Sized,
+        C::Error: Source,
+    {
+        fn verify(&self, _context: &mut C) -> Result<(), C::Error> {
+            let secs = self.secs.to_native();
+            let nanos = self.nanos.to_native();
+            if TimeDelta::parts_are_valid(secs, nanos) {
+                Ok(())
+            } else {
+                Err(invalid("TimeDelta out of range"))
+            }
+        }
+    }
 }
 
 /// The minimum possible `TimeDelta`: `-i64::MAX` milliseconds.

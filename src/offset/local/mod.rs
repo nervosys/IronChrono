@@ -121,6 +121,16 @@ mod tz_info;
     archive_attr(derive(Clone, Copy, Debug))
 )]
 #[cfg_attr(feature = "rkyv-validation", archive(check_bytes))]
+#[cfg_attr(
+    feature = "rkyv-08", derive(rkyv_08::Archive, rkyv_08::Serialize, rkyv_08::Deserialize),
+    rkyv(
+        crate = rkyv_08,
+        archived = ArchivedLocal08,
+        resolver = LocalResolver08,
+        compare(PartialEq),
+        derive(Clone, Copy, Debug)
+    )
+)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Local;

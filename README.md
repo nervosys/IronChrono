@@ -248,6 +248,7 @@ Default features:
 | `serde` | Serialization via [serde](https://github.com/serde-rs/serde). |
 | `rkyv`, `rkyv-16`, `rkyv-32`, `rkyv-64` | Serialization via [rkyv](https://github.com/rkyv/rkyv) with that integer width. `rkyv` is deprecated; the four are mutually exclusive. |
 | `rkyv-validation` | rkyv validation through `bytecheck`. |
+| `rkyv-08` | Serialization via rkyv 0.8 (>= 0.8.17, so free of RUSTSEC-2026-0235). Additive: it works alone or together with the `rkyv*` features, its types are in `chrono::rkyv08`, and archives are checked for chrono's invariants (a forged `NaiveDate` or `NaiveTime` is rejected). Needs Rust 1.81 or newer; the crate's MSRV of 1.62 is unchanged without it. |
 | `arbitrary` | Arbitrary instances of each type. |
 | `unstable-locales` | Localization: methods with a `_localized` suffix. May change in a patch release. |
 | `defmt` | `defmt` formatting. |
