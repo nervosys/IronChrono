@@ -7,7 +7,7 @@ use std::{cmp::Ordering, fmt, str};
 
 use super::rule::{AlternateTime, TransitionRule};
 use super::{DAYS_PER_WEEK, Error, SECONDS_PER_DAY, parser};
-use crate::NaiveDateTime;
+use crate::{NaiveDateTime, Timelike};
 
 /// Time zone
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -218,7 +218,8 @@ impl<'a> TimeZoneRef<'a> {
         //     Err(Error::OutOfRange(error)) => return Err(Error::FindLocalTimeType(error)),
         //     Err(err) => return Err(err),
         // };
-        let local_leap_time = local_time.and_utc().timestamp();
+        // IronChrono: compare the exact wall time (seconds and fraction), see `WallTime`.
+        let local_leap_time = WallTime::new(local_time);
 
         // if we have at least one transition,
         // we must check _all_ of them, in case of any Overlapping (MappedLocalTime::Ambiguous) or Skipping (MappedLocalTime::None) transitions
@@ -239,38 +240,33 @@ impl<'a> TimeZoneRef<'a> {
                     Ordering::Greater => {
                         // backwards transition, eg from DST to regular
                         // this means a given local time could have one of two possible offsets
-                        if local_leap_time < transition_end {
+                        if local_leap_time.before(transition_end) {
                             return Ok(crate::MappedLocalTime::Single(prev));
-                        } else if local_leap_time >= transition_end
-                            && local_leap_time <= transition_start
+                        } else if local_leap_time.at_least(transition_end)
+                            && local_leap_time.at_most(transition_start)
                         {
-                            if prev.ut_offset < after_ltt.ut_offset {
-                                return Ok(crate::MappedLocalTime::Ambiguous(prev, after_ltt));
-                            } else {
-                                return Ok(crate::MappedLocalTime::Ambiguous(after_ltt, prev));
-                            }
+                            // `Ambiguous` is (earliest, latest) and here `prev` has the larger
+                            // offset (`transition_start > transition_end`), hence the earlier
+                            // instant: it comes first. (Upstream chrono returns them reversed.)
+                            return Ok(crate::MappedLocalTime::Ambiguous(prev, after_ltt));
                         }
                     }
                     Ordering::Equal => {
                         // should this ever happen? presumably we have to handle it anyway.
-                        if local_leap_time < transition_start {
+                        // Both sides have the same offset, so nothing is skipped or repeated (upstream
+                        // returned a spurious `Ambiguous(x, x)` for the one instant `transition_end`).
+                        if local_leap_time.before(transition_start) {
                             return Ok(crate::MappedLocalTime::Single(prev));
-                        } else if local_leap_time == transition_end {
-                            if prev.ut_offset < after_ltt.ut_offset {
-                                return Ok(crate::MappedLocalTime::Ambiguous(prev, after_ltt));
-                            } else {
-                                return Ok(crate::MappedLocalTime::Ambiguous(after_ltt, prev));
-                            }
                         }
                     }
                     Ordering::Less => {
                         // forwards transition, eg from regular to DST
                         // this means that times that are skipped are invalid local times
-                        if local_leap_time <= transition_start {
+                        if local_leap_time.at_most(transition_start) {
                             return Ok(crate::MappedLocalTime::Single(prev));
-                        } else if local_leap_time < transition_end {
+                        } else if local_leap_time.before(transition_end) {
                             return Ok(crate::MappedLocalTime::None);
-                        } else if local_leap_time == transition_end {
+                        } else if local_leap_time.is(transition_end) {
                             return Ok(crate::MappedLocalTime::Single(after_ltt));
                         }
                     }
@@ -548,6 +544,53 @@ impl AsRef<str> for TimeZoneName {
 impl fmt::Debug for TimeZoneName {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         self.as_ref().fmt(f)
+    }
+}
+
+/// A local wall-clock time as whole seconds since the epoch plus whether it has a fractional second.
+///
+/// IronChrono: the upstream lookup floored the local time to whole seconds, so a time just after a
+/// boundary second was classified as being exactly on it. Comparing against an integer boundary `B`:
+/// for a fraction `f > 0`, `s + f <= B` and `s + f < B` both hold iff `s < B`, and `s + f >= B` and
+/// `s + f > B` both hold iff `s >= B`; with no fraction these are the plain integer comparisons.
+/// This gives the same boundaries as the Windows path, which compares exact `NaiveDateTime`s.
+#[derive(Debug, Copy, Clone)]
+pub(super) struct WallTime {
+    secs: i64,
+    has_fraction: bool,
+}
+
+impl WallTime {
+    pub(super) fn new(local_time: NaiveDateTime) -> Self {
+        WallTime {
+            secs: local_time.and_utc().timestamp(),
+            has_fraction: local_time.nanosecond() != 0,
+        }
+    }
+
+    /// `self <= boundary`
+    pub(super) fn at_most(self, boundary: i64) -> bool {
+        self.secs < boundary || (self.secs == boundary && !self.has_fraction)
+    }
+
+    /// `self < boundary`
+    pub(super) fn before(self, boundary: i64) -> bool {
+        self.secs < boundary
+    }
+
+    /// `self >= boundary`
+    pub(super) fn at_least(self, boundary: i64) -> bool {
+        self.secs >= boundary
+    }
+
+    /// `self > boundary`
+    pub(super) fn after(self, boundary: i64) -> bool {
+        self.secs > boundary || (self.secs == boundary && self.has_fraction)
+    }
+
+    /// `self == boundary`
+    pub(super) fn is(self, boundary: i64) -> bool {
+        self.secs == boundary && !self.has_fraction
     }
 }
 
@@ -1026,5 +1069,314 @@ mod tests {
         File::create(&small).unwrap().write_all(b"TZif").unwrap();
         assert_eq!(read_tz_file(&small).unwrap(), b"TZif");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- fold / gap semantics of `find_local_time_type_from_local` ----
+    //
+    // `MappedLocalTime::Ambiguous(a, b)` is documented as `(earliest, latest)`. In a fold the
+    // larger offset is the earlier instant, so the pair must be (larger offset, smaller offset).
+    // Boundaries compare exact `NaiveDateTime`s (as the Windows path does): a fold is the closed
+    // interval [wall_earliest, wall_latest]; of a gap, exactly wall_earliest is `Single(before)`,
+    // strictly inside is `None` and exactly wall_latest is `Single(after)`.
+
+    use crate::MappedLocalTime;
+    use crate::{NaiveDate, NaiveDateTime, TimeDelta, Timelike};
+
+    fn ndt(y: i32, mo: u32, d: u32, h: u32, mi: u32, s: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(y, mo, d).unwrap().and_hms_opt(h, mi, s).unwrap()
+    }
+
+    fn plus_ns(t: NaiveDateTime, ns: i64) -> NaiveDateTime {
+        t.checked_add_signed(TimeDelta::nanoseconds(ns)).unwrap()
+    }
+
+    fn lookup(tz: &TimeZone, t: NaiveDateTime) -> MappedLocalTime<i32> {
+        tz.find_local_time_type_from_local(t).unwrap().map(|o| o.offset())
+    }
+
+    /// A fold `[lo, hi]` entered with offset `a` and left with the smaller offset `b`.
+    fn check_fold(tz: &TimeZone, lo: NaiveDateTime, hi: NaiveDateTime, a: i32, b: i32) {
+        assert!(a > b);
+        let amb = MappedLocalTime::Ambiguous(a, b);
+        assert_eq!(lookup(tz, plus_ns(lo, -1)), MappedLocalTime::Single(a), "lo - 1ns");
+        assert_eq!(lookup(tz, plus_ns(lo, -1_000_000_000)), MappedLocalTime::Single(a), "lo - 1s");
+        assert_eq!(lookup(tz, lo), amb, "lo");
+        assert_eq!(lookup(tz, plus_ns(lo, 1)), amb, "lo + 1ns");
+        assert_eq!(lookup(tz, plus_ns(lo, 500_000_000)), amb, "lo + 0.5s");
+        assert_eq!(lookup(tz, plus_ns(hi, -1)), amb, "hi - 1ns");
+        assert_eq!(lookup(tz, hi), amb, "hi (closed end)");
+        assert_eq!(lookup(tz, plus_ns(hi, 1)), MappedLocalTime::Single(b), "hi + 1ns");
+        assert_eq!(lookup(tz, plus_ns(hi, 9_172)), MappedLocalTime::Single(b), "hi + 9us");
+        assert_eq!(lookup(tz, plus_ns(hi, 1_000_000_000)), MappedLocalTime::Single(b), "hi + 1s");
+    }
+
+    /// A gap `[gs, ge)` from offset `p` to the larger offset `q`.
+    fn check_gap(tz: &TimeZone, gs: NaiveDateTime, ge: NaiveDateTime, p: i32, q: i32) {
+        assert!(q > p);
+        assert_eq!(lookup(tz, plus_ns(gs, -1)), MappedLocalTime::Single(p), "gs - 1ns");
+        assert_eq!(lookup(tz, gs), MappedLocalTime::Single(p), "gs (exact start)");
+        assert_eq!(lookup(tz, plus_ns(gs, 1)), MappedLocalTime::None, "gs + 1ns");
+        assert_eq!(lookup(tz, plus_ns(gs, 500_000_000)), MappedLocalTime::None, "gs + 0.5s");
+        assert_eq!(lookup(tz, plus_ns(gs, 1_000_000_000)), MappedLocalTime::None, "gs + 1s");
+        assert_eq!(lookup(tz, plus_ns(ge, -1)), MappedLocalTime::None, "ge - 1ns");
+        assert_eq!(lookup(tz, plus_ns(ge, -1_000_000_000)), MappedLocalTime::None, "ge - 1s");
+        assert_eq!(lookup(tz, ge), MappedLocalTime::Single(q), "ge (exact end)");
+        assert_eq!(lookup(tz, plus_ns(ge, 1)), MappedLocalTime::Single(q), "ge + 1ns");
+    }
+
+    #[test]
+    fn fold_and_gap_posix_tz_strings() {
+        // (TZ string, fold lo, fold hi, larger offset, smaller offset, gap start, gap end,
+        //  offset before the gap, offset after the gap)
+        type Row = (&'static str, [u32; 6], [u32; 6], i32, i32, [u32; 6], [u32; 6], i32, i32);
+        let cases: [Row; 4] = [
+            // northern, normal DST
+            (
+                "PST8PDT,M3.2.0,M11.1.0",
+                [2023, 11, 5, 1, 0, 0],
+                [2023, 11, 5, 2, 0, 0],
+                -25200,
+                -28800,
+                [2023, 3, 12, 2, 0, 0],
+                [2023, 3, 12, 3, 0, 0],
+                -28800,
+                -25200,
+            ),
+            (
+                "CET-1CEST,M3.5.0,M10.5.0/3",
+                [2023, 10, 29, 2, 0, 0],
+                [2023, 10, 29, 3, 0, 0],
+                7200,
+                3600,
+                [2023, 3, 26, 2, 0, 0],
+                [2023, 3, 26, 3, 0, 0],
+                3600,
+                7200,
+            ),
+            // southern hemisphere
+            (
+                "AEST-10AEDT,M10.1.0,M4.1.0/3",
+                [2023, 4, 2, 2, 0, 0],
+                [2023, 4, 2, 3, 0, 0],
+                39600,
+                36000,
+                [2023, 10, 1, 2, 0, 0],
+                [2023, 10, 1, 3, 0, 0],
+                36000,
+                39600,
+            ),
+            // negative DST: the fold is entered from "standard" time, at the DST *start*
+            (
+                "IST-1GMT0,M10.5.0,M3.5.0/1",
+                [2023, 10, 29, 1, 0, 0],
+                [2023, 10, 29, 2, 0, 0],
+                3600,
+                0,
+                [2023, 3, 26, 1, 0, 0],
+                [2023, 3, 26, 2, 0, 0],
+                0,
+                3600,
+            ),
+        ];
+        let d = |a: [u32; 6]| ndt(a[0] as i32, a[1], a[2], a[3], a[4], a[5]);
+        for (tz_string, lo, hi, a, b, gs, ge, p, q) in cases {
+            let tz = TimeZone::from_posix_tz(tz_string).unwrap();
+            check_fold(&tz, d(lo), d(hi), a, b);
+            check_gap(&tz, d(gs), d(ge), p, q);
+        }
+    }
+
+    #[test]
+    fn fold_and_gap_constructed_transitions() -> Result<(), Error> {
+        let t = 1_000_000;
+        let at = |s: i64| crate::DateTime::from_timestamp(s, 0).unwrap().naive_utc();
+
+        // Fold: LMT -07:52:58 -> PST -08:00 (clocks back 7m02s), as Los Angeles in 1883.
+        let tz = TimeZone::new(
+            vec![Transition::new(t, 1)],
+            vec![
+                LocalTimeType::new(-28378, false, Some(b"LMT"))?,
+                LocalTimeType::new(-28800, false, Some(b"PST"))?,
+            ],
+            Vec::new(),
+            None,
+        )?;
+        check_fold(&tz, at(t - 28800), at(t - 28378), -28378, -28800);
+
+        // Gap: +00:00 -> +01:00.
+        let tz = TimeZone::new(
+            vec![Transition::new(t, 1)],
+            vec![LocalTimeType::UTC, LocalTimeType::new(3600, true, Some(b"BST"))?],
+            Vec::new(),
+            None,
+        )?;
+        check_gap(&tz, at(t), at(t + 3600), 0, 3600);
+
+        // Same offset on both sides (only the name changes): never ambiguous, never skipped.
+        let tz = TimeZone::new(
+            vec![Transition::new(t, 1)],
+            vec![
+                LocalTimeType::new(3600, false, Some(b"AAA"))?,
+                LocalTimeType::new(3600, false, Some(b"BBB"))?,
+            ],
+            Vec::new(),
+            None,
+        )?;
+        for ns in [-1, 0, 1] {
+            for s in [t + 3600 - 1, t + 3600, t + 3600 + 1] {
+                assert_eq!(lookup(&tz, plus_ns(at(s), ns)), MappedLocalTime::Single(3600));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fold_and_gap_tzif_zones() {
+        // Zones from the system database (skipped when the database is not installed).
+        let zone = |name: &str| TimeZone::from_posix_tz(name).ok();
+        if let Some(tz) = zone("America/Los_Angeles") {
+            // LMT -07:52:58 -> PST (7m02s fold) in 1883: a TZif transition...
+            check_fold(
+                &tz,
+                ndt(1883, 11, 18, 12, 0, 0),
+                ndt(1883, 11, 18, 12, 7, 2),
+                -28378,
+                -28800,
+            );
+            // ...and the ordinary folds and gaps, from TZif data (2023) and the TZ string (2050).
+            check_fold(&tz, ndt(2023, 11, 5, 1, 0, 0), ndt(2023, 11, 5, 2, 0, 0), -25200, -28800);
+            check_fold(&tz, ndt(2050, 11, 6, 1, 0, 0), ndt(2050, 11, 6, 2, 0, 0), -25200, -28800);
+            check_gap(&tz, ndt(2023, 3, 12, 2, 0, 0), ndt(2023, 3, 12, 3, 0, 0), -28800, -25200);
+            check_gap(&tz, ndt(2050, 3, 13, 2, 0, 0), ndt(2050, 3, 13, 3, 0, 0), -28800, -25200);
+        }
+        if let Some(tz) = zone("Europe/Berlin") {
+            check_fold(&tz, ndt(2023, 10, 29, 2, 0, 0), ndt(2023, 10, 29, 3, 0, 0), 7200, 3600);
+            check_gap(&tz, ndt(2023, 3, 26, 2, 0, 0), ndt(2023, 3, 26, 3, 0, 0), 3600, 7200);
+        }
+        if let Some(tz) = zone("Europe/Dublin") {
+            check_fold(&tz, ndt(2023, 10, 29, 1, 0, 0), ndt(2023, 10, 29, 2, 0, 0), 3600, 0);
+            check_gap(&tz, ndt(2023, 3, 26, 1, 0, 0), ndt(2023, 3, 26, 2, 0, 0), 0, 3600);
+        }
+        if let Some(tz) = zone("Australia/Sydney") {
+            check_fold(&tz, ndt(2023, 4, 2, 2, 0, 0), ndt(2023, 4, 2, 3, 0, 0), 39600, 36000);
+            check_gap(&tz, ndt(2023, 10, 1, 2, 0, 0), ndt(2023, 10, 1, 3, 0, 0), 36000, 39600);
+        }
+    }
+
+    /// For local times around every transition (whole seconds and fractions), the offsets of the
+    /// result are exactly the candidate offsets that convert back to themselves.
+    fn check_consistency(tz: &TimeZone, from: i64, to: i64) {
+        let off = |s: i64| tz.find_local_time_type(s).unwrap().offset();
+        let mut cands: Vec<i32> = tz.local_time_types.iter().map(|t| t.offset()).collect();
+        cands.sort_unstable_by(|x, y| y.cmp(x));
+        cands.dedup();
+
+        let mut transitions = Vec::new();
+        let mut s = from;
+        while s < to {
+            if off(s) != off(s + 900) {
+                let (mut lo, mut hi) = (s, s + 900);
+                while hi - lo > 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    if off(mid) == off(s) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                transitions.push(hi);
+            }
+            s += 900;
+        }
+        assert!(!transitions.is_empty(), "no transition in range");
+
+        let mut checked = 0u32;
+        for &tr in &transitions {
+            for &cand in &cands {
+                let mut d: i64 = -7200;
+                while d <= 7200 {
+                    // dense around the boundary, sparse elsewhere
+                    let step = if (-5..=5).contains(&d) { 1 } else { 61 };
+                    for nanos in [0u32, 1, 500_000_000, 999_999_999] {
+                        let local =
+                            crate::DateTime::from_timestamp(tr + i64::from(cand) + d, nanos)
+                                .unwrap()
+                                .naive_utc();
+                        let got = lookup(tz, local);
+                        // A whole second that is exactly a transition instant for some candidate
+                        // is a documented closed boundary (the Windows path behaves the same).
+                        let on_boundary = nanos == 0
+                            && cands.iter().any(|&o| {
+                                let u = local.and_utc().timestamp() - i64::from(o);
+                                off(u) != off(u - 1)
+                            });
+                        let want: Vec<i32> = cands
+                            .iter()
+                            .copied()
+                            .filter(|&o| {
+                                let u = (local - TimeDelta::seconds(i64::from(o)))
+                                    .and_utc()
+                                    .timestamp();
+                                off(u) == o
+                            })
+                            .collect();
+                        let got_vec: Vec<i32> = match got {
+                            MappedLocalTime::Single(a) => vec![a],
+                            MappedLocalTime::Ambiguous(a, b) => {
+                                assert!(
+                                    a > b,
+                                    "fold must be (larger, smaller): {:?} at {}",
+                                    got,
+                                    local
+                                );
+                                vec![a, b]
+                            }
+                            MappedLocalTime::None => vec![],
+                        };
+                        if !on_boundary {
+                            assert_eq!(
+                                got_vec,
+                                want,
+                                "at {} (nanos {})",
+                                local,
+                                local.nanosecond()
+                            );
+                        }
+                        checked += 1;
+                    }
+                    d += step;
+                }
+            }
+        }
+        assert!(checked > 1000);
+    }
+
+    #[test]
+    fn local_lookup_is_consistent_with_utc_lookup() {
+        for tz_string in [
+            "PST8PDT,M3.2.0,M11.1.0",
+            "CET-1CEST,M3.5.0,M10.5.0/3",
+            "AEST-10AEDT,M10.1.0,M4.1.0/3",
+            "IST-1GMT0,M10.5.0,M3.5.0/1",
+        ] {
+            let tz = TimeZone::from_posix_tz(tz_string).unwrap();
+            for year in [2023i64, 2050] {
+                let from = (year - 1970) * 31_556_952;
+                check_consistency(&tz, from, from + 366 * 86400);
+            }
+        }
+        for (name, from, to) in [
+            ("America/Los_Angeles", -2_722_800_000, -2_722_800_000 + 200 * 86400), // 1883
+            ("America/Los_Angeles", 1_672_531_200, 1_672_531_200 + 366 * 86400),   // 2023
+            ("America/Los_Angeles", 2_524_608_000, 2_524_608_000 + 366 * 86400),   // 2050
+            ("Europe/Berlin", 1_672_531_200, 1_672_531_200 + 366 * 86400),
+            ("Europe/Dublin", 1_672_531_200, 1_672_531_200 + 366 * 86400),
+            ("Australia/Sydney", 1_672_531_200, 1_672_531_200 + 366 * 86400),
+            ("Pacific/Apia", 1_262_304_000, 1_262_304_000 + 366 * 86400), // 2010
+        ] {
+            if let Ok(tz) = TimeZone::from_posix_tz(name) {
+                check_consistency(&tz, from, to);
+            }
+        }
     }
 }

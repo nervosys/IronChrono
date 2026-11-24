@@ -16,7 +16,7 @@ practices IronChrono helps a system meet, and which stay with the system that us
 |---|---|
 | Known vulnerabilities in IronChrono's code | None. Both chrono advisories checked: RUSTSEC-2020-0159 is fixed in this code; RUSTSEC-2026-0543 is chrono's "unmaintained" notice, which IronChrono answers. |
 | Known vulnerabilities in dependencies | Default features: none (2 dependencies). One in the opt-in `rkyv` features: RUSTSEC-2026-0235 in rkyv 0.7, which has no fixed 0.7 release (DEP-1, mitigated: use `rkyv-08`). |
-| New findings | 16: 1 High, 5 Medium, 6 Low, 4 Info. 13 fixed with regression tests; 1 mitigated (DEP-1: rkyv 0.7 has no fixed release, use `rkyv-08`); 2 accepted with reasons (LIB-2, CLI-10). Upstream's documented panics are listed as LIB-5. |
+| New findings | 17: 1 High, 6 Medium, 6 Low, 4 Info. 14 fixed with regression tests; 1 mitigated (DEP-1: rkyv 0.7 has no fixed release, use `rkyv-08`); 2 accepted with reasons (LIB-2, CLI-10). Upstream's documented panics are listed as LIB-5. |
 | Memory safety | 13 `unsafe` sites, all reviewed sound (8 in production code, OS calls and two checked invariants). The CLI forbids `unsafe`. |
 | Fuzzing | 6 targets, about 64 million executions under AddressSanitizer with debug assertions: 0 crashes. The kept targets were run again after the fixes: 0 crashes. |
 | Cryptography (FIPS 140-3) | None in the library or the CLI. Nothing to validate; IronChrono cannot weaken a FIPS configuration. |
@@ -45,6 +45,7 @@ re-scores for its deployment.
 | CLI-5 | Output amplification (`%+` ×28) and full input echoed in errors | Medium | 405 | Fixed |
 | LIB-1 | The file `TZ` names is read without limit: `/dev/zero` → 2.9 GB, a FIFO hangs `Local::now()` | Medium 4.7 `AV:L/AC:H/PR:L/UI:N/S:U/C:N/I:N/A:H` | 770 | Fixed |
 | LIB-6 | A forged rkyv 0.7 archive of a `NaiveDate`, `NaiveTime`, `TimeDelta`, `FixedOffset` or `IsoWeek` passed validation with broken invariants, so later calls panicked or returned wrong values | Medium 4.8 `AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:L` | 20, 1287 | Fixed |
+| LIB-7 | On Unix `Local.from_local_datetime` returned every fold as (later, earlier) instead of the documented (earliest, latest), so `earliest()`, `latest()` and `LocalPolicy::Earliest`/`Latest` picked the wrong instant; times a fraction of a second past a fold or gap boundary were also misclassified | Medium 4.1 `AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N` | 682 | Fixed |
 | CLI-2 | A non-UTF-8 argument panics the CLI | Low 3.3 `AV:L/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:L` | 248, 176 | Fixed |
 | CLI-6 | `--text` mode writes control and bidi characters raw to the terminal | Low 4.3 `AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N` | 150, 117 | Fixed |
 | CLI-7 | `--text` / `--help` recognised anywhere, even after `--` or as a flag's value | Low 4.3 `AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:L/A:N` | 88 | Fixed |
@@ -113,6 +114,22 @@ After the fix, each of these falls back to the system zone in about 10 ms: `/dev
   checks through their fields. Tests: `rkyv07_forged_*` in `src/rkyv07_tests.rs`, nine of which
   fail on the previous code. The derived `Deserialize` is unchanged: rkyv 0.7 leaves unchecked
   access of untrusted bytes to the caller, and a generic deserializer error cannot be built.
+
+- **LIB-7:** found by `fuzz_local` on Linux (its `assert!(a <= b)` on every `Ambiguous`). In a fold
+  the larger offset is the earlier instant, but the tz_info lookup returned the pair ordered by
+  offset ascending (TZif path) or `(std, dst)` (TZ-string path), so for every fold `a > b`:
+  Los Angeles 2023-11-05 01:30 gave `(-08:00, -07:00)`; likewise Berlin, Sydney, Dublin (negative
+  DST) and the 1883 LMT change. Code that takes `earliest()` (for example to schedule at the first
+  occurrence) got the later instant, one hour wrong, once or twice a year per zone. A second
+  defect floored the local time to whole seconds, so times just past a boundary were classified
+  as on it. Impact is the integrity of a time stamp (I:L), with no confidentiality or availability
+  effect; it needs an application that resolves attacker-influenced local times in a fold (AC:H),
+  hence 4.1. Fix: the pair is always (larger, smaller) offset, boundaries compare seconds and
+  fraction exactly (`WallTime`), and the result is the same as the Windows path. chrono 0.4.45 has
+  both defects. Tests: `fold_and_gap_posix_tz_strings`, `fold_and_gap_constructed_transitions`,
+  `fold_and_gap_tzif_zones` and the property test `local_lookup_is_consistent_with_utc_lookup`
+  (every offset returned converts back to itself, for fractions around every transition), all of
+  which fail on the previous code.
 
 ### Low and Info
 
@@ -191,6 +208,11 @@ The two TZ harnesses need a `cfg(fuzzing)` hook into private parsers, so they we
 the tree. Re-run after the fixes, with `fuzz_agent` now asserting that every format `check_output_format`
 accepts also formats: `fuzz_agent` 2,125,744 runs in 301 s and `fuzz_parse` 627,074 runs in
 121 s, with 0 crashes.
+
+After the LIB-7 fix, `fuzz_local` (Linux, ASan) replayed its crash artifact in five zones with no failure
+and ran with `TZ` set to America/Los_Angeles (317,481 runs, 301 s), Europe/Berlin (104,011),
+Europe/Dublin (113,462), Australia/Sydney (137,786) and Pacific/Apia (527,432), 120 s each: 0
+crashes, `assert!(a <= b)` holds.
 
 ## MITRE ATT&CK
 

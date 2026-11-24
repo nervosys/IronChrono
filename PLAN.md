@@ -80,8 +80,9 @@ whole dependency graph (sqlx and friends included) can be moved with one
 ## Security audit (2026-11-24)
 
 - [x] CVE/RustSec/OSV, MITRE ATT&CK, NIST FIPS, CMMC 2.0 Level 2: SECURITY-AUDIT.md.
-      16 findings, 13 fixed with regression tests (1 High, 5 Medium fixed); LIB-6 closed the
-      forged rkyv 0.7 archives.
+      17 findings, 14 fixed with regression tests (1 High, 6 Medium fixed); LIB-6 closed the
+      forged rkyv 0.7 archives, LIB-7 the reversed fold order (and sub-second boundaries) of the
+      Unix `Local` lookup.
 - [x] DEP-1: an additive `rkyv-08` feature (rkyv 0.7 has RUSTSEC-2026-0235 and no fix).
 - [x] Windows-native fuzzing of the `Local` FFI path (`fuzz_local` under ASan,
       `tests/windows_local.rs` sweep; Pacific zone only).

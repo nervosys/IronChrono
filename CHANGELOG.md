@@ -74,6 +74,23 @@ From the 2026-11-24 audit (SECURITY-AUDIT.md):
 
 * Three doctests used the deprecated `core::i32::MAX` and no longer compiled cleanly on current
   Rust. They use `i32::MAX`.
+* `Local.from_local_datetime` on Unix returned the two instants of a fold in the wrong order:
+  `MappedLocalTime::Ambiguous(a, b)` is documented as (earliest, latest) but every fold came back
+  as (later, earlier), so `earliest()`, `latest()` and `LocalPolicy::Earliest` / `Latest` chose the
+  opposite instant. It is a behaviour change, made because it is a bug: the documented contract and
+  the Windows path already say (earliest, latest). chrono 0.4.45 has the same bug (it was found by
+  the `fuzz_local` target on Linux). Cause: the tz_info lookup ordered the pair by offset
+  ascending, and the TZ-string rule returned `(std, dst)` whichever way the fold was entered; the
+  larger offset is always the earlier instant. Negative-DST zones (Europe/Dublin) and the
+  southern-hemisphere rules are covered.
+* The same Unix lookup floored the local time to whole seconds, so a time a fraction of a second
+  past a boundary was classified as exactly on it: 9 µs after the end of a fold was still
+  `Ambiguous`, and 0.5 s into a gap was `Single` instead of `None`. Boundaries now compare the
+  exact time, as the Windows path does: a fold is the closed interval, the instant a gap starts is
+  still valid, the instant it ends is `Single(after)`. The southern-hemisphere TZ-string rule
+  also called the exact start of a gap invalid; it no longer does. Whole-second behaviour is
+  otherwise unchanged, and a zone whose two sides share an offset is no longer ambiguous at one
+  instant.
 
 ### Changed
 

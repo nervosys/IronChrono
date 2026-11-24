@@ -1,5 +1,5 @@
 use super::parser::Cursor;
-use super::timezone::{LocalTimeType, SECONDS_PER_WEEK};
+use super::timezone::{LocalTimeType, SECONDS_PER_WEEK, WallTime};
 use super::{
     CUMUL_DAY_IN_MONTHS_NORMAL_YEAR, DAY_IN_MONTHS_NORMAL_YEAR, DAYS_PER_WEEK, Error,
     SECONDS_PER_DAY,
@@ -228,7 +228,8 @@ impl AlternateTime {
     ) -> Result<crate::MappedLocalTime<LocalTimeType>, Error> {
         // Year must be between i32::MIN + 2 and i32::MAX - 2, year in NaiveDate is always smaller.
         let current_year = local_time.year();
-        let local_time = local_time.and_utc().timestamp();
+        // IronChrono: compare the exact wall time (seconds and fraction), see `WallTime`.
+        let local_time = WallTime::new(local_time);
 
         let dst_start_transition_start =
             self.dst_start.unix_time(current_year, 0) + i64::from(self.dst_start_time);
@@ -252,39 +253,31 @@ impl AlternateTime {
                 {
                     // northern hemisphere
                     // For the DST END transition, the `start` happens at a later timestamp than the `end`.
-                    if local_time <= dst_start_transition_start {
+                    if local_time.at_most(dst_start_transition_start) {
                         Ok(crate::MappedLocalTime::Single(self.std))
-                    } else if local_time > dst_start_transition_start
-                        && local_time < dst_start_transition_end
-                    {
+                    } else if local_time.before(dst_start_transition_end) {
                         Ok(crate::MappedLocalTime::None)
-                    } else if local_time >= dst_start_transition_end
-                        && local_time < dst_end_transition_end
-                    {
+                    } else if local_time.before(dst_end_transition_end) {
                         Ok(crate::MappedLocalTime::Single(self.dst))
-                    } else if local_time >= dst_end_transition_end
-                        && local_time <= dst_end_transition_start
-                    {
-                        Ok(crate::MappedLocalTime::Ambiguous(self.std, self.dst))
+                    } else if local_time.at_most(dst_end_transition_start) {
+                        // The fold is entered from DST, the larger offset and the earlier instant.
+                        Ok(crate::MappedLocalTime::Ambiguous(self.dst, self.std))
                     } else {
                         Ok(crate::MappedLocalTime::Single(self.std))
                     }
                 } else {
                     // southern hemisphere regular DST
                     // For the DST END transition, the `start` happens at a later timestamp than the `end`.
-                    if local_time < dst_end_transition_end {
+                    if local_time.before(dst_end_transition_end) {
                         Ok(crate::MappedLocalTime::Single(self.dst))
-                    } else if local_time >= dst_end_transition_end
-                        && local_time <= dst_end_transition_start
-                    {
-                        Ok(crate::MappedLocalTime::Ambiguous(self.std, self.dst))
-                    } else if local_time > dst_end_transition_end
-                        && local_time < dst_start_transition_start
-                    {
+                    } else if local_time.at_most(dst_end_transition_start) {
+                        // The fold is entered from DST, the larger offset and the earlier instant.
+                        Ok(crate::MappedLocalTime::Ambiguous(self.dst, self.std))
+                    } else if local_time.at_most(dst_start_transition_start) {
+                        // (Upstream put the exact gap start in the gap; as everywhere else, and as
+                        // on Windows, it is the last valid time before the gap.)
                         Ok(crate::MappedLocalTime::Single(self.std))
-                    } else if local_time >= dst_start_transition_start
-                        && local_time < dst_start_transition_end
-                    {
+                    } else if local_time.before(dst_start_transition_end) {
                         Ok(crate::MappedLocalTime::None)
                     } else {
                         Ok(crate::MappedLocalTime::Single(self.dst))
@@ -292,24 +285,20 @@ impl AlternateTime {
                 }
             }
             Ordering::Greater => {
+                // Negative DST (`std` has the larger offset): DST starts with a fold and ends with a gap.
                 if self.dst_start.transition_date(current_year).0
                     < self.dst_end.transition_date(current_year).0
                 {
                     // southern hemisphere reverse DST
                     // For the DST END transition, the `start` happens at a later timestamp than the `end`.
-                    if local_time < dst_start_transition_end {
+                    if local_time.before(dst_start_transition_end) {
                         Ok(crate::MappedLocalTime::Single(self.std))
-                    } else if local_time >= dst_start_transition_end
-                        && local_time <= dst_start_transition_start
-                    {
-                        Ok(crate::MappedLocalTime::Ambiguous(self.dst, self.std))
-                    } else if local_time > dst_start_transition_start
-                        && local_time < dst_end_transition_start
-                    {
+                    } else if local_time.at_most(dst_start_transition_start) {
+                        // The fold is entered from `std`, the larger offset and the earlier instant.
+                        Ok(crate::MappedLocalTime::Ambiguous(self.std, self.dst))
+                    } else if local_time.at_most(dst_end_transition_start) {
                         Ok(crate::MappedLocalTime::Single(self.dst))
-                    } else if local_time >= dst_end_transition_start
-                        && local_time < dst_end_transition_end
-                    {
+                    } else if local_time.before(dst_end_transition_end) {
                         Ok(crate::MappedLocalTime::None)
                     } else {
                         Ok(crate::MappedLocalTime::Single(self.std))
@@ -317,20 +306,15 @@ impl AlternateTime {
                 } else {
                     // northern hemisphere reverse DST
                     // For the DST END transition, the `start` happens at a later timestamp than the `end`.
-                    if local_time <= dst_end_transition_start {
+                    if local_time.at_most(dst_end_transition_start) {
                         Ok(crate::MappedLocalTime::Single(self.dst))
-                    } else if local_time > dst_end_transition_start
-                        && local_time < dst_end_transition_end
-                    {
+                    } else if local_time.before(dst_end_transition_end) {
                         Ok(crate::MappedLocalTime::None)
-                    } else if local_time >= dst_end_transition_end
-                        && local_time < dst_start_transition_end
-                    {
+                    } else if local_time.before(dst_start_transition_end) {
                         Ok(crate::MappedLocalTime::Single(self.std))
-                    } else if local_time >= dst_start_transition_end
-                        && local_time <= dst_start_transition_start
-                    {
-                        Ok(crate::MappedLocalTime::Ambiguous(self.dst, self.std))
+                    } else if local_time.at_most(dst_start_transition_start) {
+                        // The fold is entered from `std`, the larger offset and the earlier instant.
+                        Ok(crate::MappedLocalTime::Ambiguous(self.std, self.dst))
                     } else {
                         Ok(crate::MappedLocalTime::Single(self.dst))
                     }
